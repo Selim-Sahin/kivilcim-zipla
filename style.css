@@ -1,0 +1,233 @@
+/* =============================================================
+   style.css — Tam ekran oyun alanı ve sade arayüz
+   ============================================================= */
+:root {
+  --ink: #3b2f22;
+  --paper: rgba(255, 248, 232, 0.9);
+  --accent: #c4672b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Uzun basmada kaydırma, yakınlaştırma, metin seçimi ve menü çıkmasın */
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #efe3c6;
+  overscroll-behavior: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+#game {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+/* ---------- Puan (sol üst, çentikli ekranlar için güvenli alan) ---------- */
+#hud {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: calc(env(safe-area-inset-left, 0px) + 14px);
+  color: var(--ink);
+  pointer-events: none;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+#score {
+  font-size: clamp(18px, 3.5vw, 28px);
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  transform-origin: left center;
+}
+
+#score.bump {
+  animation: bump 0.25s ease-out;
+}
+
+#best {
+  margin-top: 2px;
+  font-size: clamp(11px, 1.9vw, 14px);
+  font-weight: 600;
+  opacity: 0.72;
+}
+
+/* ---------- İpucu (alt orta) ---------- */
+#hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(60, 40, 20, 0.12);
+  transition: opacity 0.6s;
+}
+
+#hint small {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.65;
+}
+
+#hint.gone {
+  opacity: 0;
+}
+
+/* ---------- "+N" balonları ---------- */
+#popups {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.popup {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: clamp(16px, 3vw, 22px);
+  font-weight: 800;
+  color: var(--ink);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
+  animation: rise 0.9s ease-out forwards;
+}
+
+.popup.strong {
+  color: var(--accent);
+  font-size: clamp(20px, 4vw, 30px);
+}
+
+/* ---------- Oyun bitti ---------- */
+#gameover {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(60, 45, 25, 0.18);
+  opacity: 0;
+  pointer-events: none;   /* dokunuşlar alttaki tuvale gitsin */
+  transition: opacity 0.35s;
+}
+
+#gameover.visible {
+  opacity: 1;
+}
+
+.go-card {
+  min-width: min(280px, 100%);
+  padding: 22px 34px 20px;
+  border-radius: 18px;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: center;
+  box-shadow: 0 10px 30px rgba(60, 40, 20, 0.18);
+  transform: translateY(8px) scale(0.97);
+  transition: transform 0.35s;
+}
+
+#gameover.visible .go-card {
+  transform: none;
+}
+
+.go-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+
+.go-score {
+  margin: 4px 0 2px;
+  font-size: clamp(44px, 12vw, 72px);
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.go-best {
+  font-size: 15px;
+  opacity: 0.75;
+}
+
+.go-new {
+  margin-top: 4px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.go-hint {
+  margin-top: 14px;
+  font-size: 14px;
+  font-weight: 600;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* ---------- Hata ve FPS ---------- */
+#error {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--ink);
+  text-align: center;
+}
+
+#error[hidden] {
+  display: none;
+}
+
+#fps {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  right: calc(env(safe-area-inset-right, 0px) + 14px);
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font: 600 12px/1.4 ui-monospace, Consolas, monospace;
+  pointer-events: none;
+}
+
+/* ---------- Animasyonlar ---------- */
+@keyframes bump {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+
+@keyframes rise {
+  0% { opacity: 0; transform: translate(-50%, -30%); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -170%); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}

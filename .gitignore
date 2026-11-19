@@ -1,0 +1,39 @@
+# İşletim sistemi dosyaları
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editör ve yapay zekâ asistanı ayarları (kişisel)
+.vscode/
+.idea/
+.claude/
+CLAUDE.local.md
+*.swp
+*~
+
+# Gizli bilgiler / ortam değişkenleri
+.env
+.env.*
+*.pem
+*.key
+
+# Günlükler, geçici ve yedek dosyalar
+*.log
+*.tmp
+*.bak
+*.orig
+tmp/
+temp/
+
+# Test ve ekran görüntüsü artıkları
+test-results/
+playwright-report/
+coverage/
+screenshots/
+*.gif
+
+# Python yerel sunucu artıkları
+__pycache__/
+
+# Olası Node kurulumları (proje Node gerektirmez)
+node_modules/
