@@ -11,6 +11,12 @@ CLAUDE.local.md
 *.swp
 *~
 
+# Claude Code kişisel ayarları ve konuşma kayıtları
+.claude/settings.local.json
+claude-log.md
+claude-log.md.tmp
+cikti.txt
+
 # Gizli bilgiler / ortam değişkenleri
 .env
 .env.*
