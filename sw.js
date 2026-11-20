@@ -7,7 +7,7 @@
 //  sürümü arka planda indirir, eski önbelleği siler; sayfa da uygun
 //  anda (oyuncu henüz puan almamışken) kendini yeniler.
 // =============================================================
-const VERSION = 'v-b2badad976';
+const VERSION = 'v-64eb4fae00';
 const CACHE = 'kivilcim-' + VERSION;
 
 // Oyunun ihtiyaç duyduğu dosyaların tamamı (ilk açılışta hepsi indirilir)
@@ -37,9 +37,12 @@ const ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
+    // İlk kurulumda sayfanın az önce indirdiği kopyalar kullanılır (ikinci kez indirme yok).
+    // Güncellemede ise cache: 'reload' → HTTP önbelleğindeki eski kopyayı değil, sunucudakini al.
+    const isUpdate = (await caches.keys()).some((n) => n.startsWith('kivilcim-'));
+    const mode = isUpdate ? 'reload' : 'default';
     const cache = await caches.open(CACHE);
-    // cache: 'reload' → tarayıcının HTTP önbelleğindeki eski kopyayı değil, sunucudakini al
-    await cache.addAll(ASSETS.map((url) => new Request(url, { cache: 'reload' })));
+    await cache.addAll(ASSETS.map((url) => new Request(url, { cache: mode })));
     await self.skipWaiting();  // eski sürümün kapanmasını bekleme
   })());
 });
