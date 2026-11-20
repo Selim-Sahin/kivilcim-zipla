@@ -15,7 +15,8 @@ masaüstü ve mobil tarayıcıda açılır.
 - **Verlet entegrasyonu** — pelerin fiziği; **InstancedMesh + özel shader** — rüzgârlı çim.
 - **localStorage** — en yüksek skoru saklar.
 - **PWA (manifest + service worker)** — ana ekrana eklenebilir; ikinci açılış önbellekten gelir, çevrimdışı çalışır.
-- **Uyarlanabilir kalite** — açılışta FPS ölçülür, telefon yetişemiyorsa çözünürlük, gölge ve çim yoğunluğu kademeli düşürülür.
+- **Uyarlanabilir kalite** — ekranın yenileme hızı (60/120 Hz) ölçülür, FPS oyun boyunca izlenir; çözünürlük, gölge ve çim yoğunluğu gerektiğinde kademeli düşürülür ya da yükseltilir. Sağ üstteki dişliden elle de seçilebilir (Otomatik / Yüksek / Orta / Düşük).
+- **Önceden çizilmiş zemin dokusu** — zemin gürültüsü açılışta bir kez GPU'da dokuya çizilir; her karede yalnızca okunur.
 - **GitHub Pages** — statik barındırma.
 - Robot, pelerin, platformlar, çim ve dokular tamamen kodla üretilir; harici model/görsel dosyası yoktur.
 
@@ -44,8 +45,39 @@ python -m http.server 8000 --bind 0.0.0.0
 - Bu bilgisayarda: <http://localhost:8000>
 - Aynı ağdaki telefon/tablette: `http://<bilgisayarın-yerel-IP'si>:8000`
   (Windows'ta IP için `ipconfig`; güvenlik duvarı Python için izin isteyebilir — "Özel ağ"ı onayla.)
-- Kare hızını ve kalite kademesini görmek için adresin sonuna `?fps` ekle: `http://localhost:8000/?fps`
-  (ör. `58 FPS · K1 · 1.5x · yumuşak gölge · çim %100`; ölçüm sürerken `ölçülüyor` yazar)
+- Kare hızını ve kalite kademesini görmek için adresin sonuna `?fps` ekle: `http://localhost:8000/?fps`. Gösterge üç satırdır:
+  ```
+  58 FPS · işlemci 3.1 ms
+  K1 · 1.5x · yumuşak gölge · çim %100
+  otomatik · 120 Hz · hedef 55 · izleme
+  ```
+  - **işlemci**: bir karede JavaScript'in harcadığı süre (oyun mantığı, pelerin fiziği, çizim komutları). 120 Hz için kare başına 8,3 ms, 60 Hz için 16,7 ms bütçe var. Bu sayı bütçeye yakınsa darboğaz işlemcidir ve grafik ayarlarını düşürmek pek işe yaramaz.
+  - **K0–K7**: kalite kademesi (`config.js` → `quality.levels`).
+  - **arama / izleme / derleniyor / (deneme)**: otomatik kalitenin o anki işi.
+
+## Teşhis modu: hangi ayar ne kadar FPS kazandırıyor?
+
+`?fps` adresine aşağıdaki parametreleri ekleyerek ayarları **tek tek** kapatabilirsin.
+Bu parametrelerden biri varken otomatik kalite ve dişli menüsü devre dışıdır (gösterge `teşhis` yazar),
+böylece ölçtüğün fark yalnızca o ayardan gelir.
+
+| Parametre | Ne yapar |
+|---|---|
+| `pr=1` | Çözünürlük çarpanı (pixelRatio). `1`, `1.5`, `2` gibi değer alır. Yüksek DPI telefonda en büyük etkili ayar genelde budur. |
+| `shadow=off` | Gölgeleri kapatır. `pcf` (sert kenarlı) ve `pcfsoft` (yumuşak, varsayılan) de yazılabilir. |
+| `grass=0` | Çimi gizler. `0.5` gibi bir oran da verilebilir. |
+| `ground=flat` | Zemini dokusuz, düz renk yapar. `ground=noise` eski yöntemi (her pikselde gürültü hesabı) geri getirir; yeni dokulu zeminle karşılaştırmak için. |
+
+Önerilen ölçüm sırası (her birinde FPS'in oturması için ~10 sn bekle):
+
+1. `…/kivilcim-zipla/?fps&pr=2` (temel ölçüm: en yüksek çözünürlük, diğer her şey açık)
+2. `…/kivilcim-zipla/?fps&pr=1`
+3. `…/kivilcim-zipla/?fps&pr=2&shadow=off`
+4. `…/kivilcim-zipla/?fps&pr=2&grass=0`
+5. `…/kivilcim-zipla/?fps&pr=2&ground=flat` ve `…&ground=noise`
+6. `…/kivilcim-zipla/?fps&pr=1&shadow=off&grass=0&ground=flat` (her şey kapalı: ulaşılabilecek en yüksek FPS)
+
+Her şey kapalıyken bile FPS düşükse ve **işlemci** süresi yüksekse sorun grafik değil, JavaScript tarafıdır.
 - `?debug` eklenirse tarayıcı konsolundan `game` nesnesine erişebilirsin (ör. `game.score`, `game.state`).
 
 ## GitHub Pages'te yayınlama
@@ -88,11 +120,12 @@ src/
   game.js         durum makinesi, zıplama yayı, iniş kontrolü, puan, kamera takibi
   robot.js        Kıvılcım'ın inşası, çömelme/uzama, dönme, güç halkası
   cape.js         Verlet parçacık tabanlı pelerin fiziği
-  world.js        ışıklar, sis, sonsuz zemin, rüzgârlı çim (InstancedMesh + shader)
+  world.js        ışıklar, sis, sonsuz zemin (açılışta dokuya çizilir), rüzgârlı çim (InstancedMesh + shader)
   platforms.js    4 bahçe objesi, zorluk eğrisi, ekrandan çıkanları silme
   input.js        Pointer Events + Boşluk tuşu
   hud.js          puan, en iyi skor, puan balonları, oyun bitti ekranı
-  quality.js      uyarlanabilir kalite: FPS ölçümü ve kademe değiştirme
+  quality.js      uyarlanabilir kalite: ekran hızı ölçümü, arama, histerezisli izleme, teşhis modu
+  settings.js     sağ üstteki dişli: Otomatik / Yüksek / Orta / Düşük (localStorage)
 ```
 
 ## Ayarlar (`src/config.js`)
@@ -109,7 +142,10 @@ Değeri değiştirip sayfayı yenilemen yeterli. Sık kullanılanlar:
 | `cape.iterations`, `cape.stiffness`, `cape.bendStiffness` | Pelerinin sertliği |
 | `cape.airDrag`, `cape.flutter` | Havada savrulma ve dalgalanma |
 | `quality.levels` | Kalite kademeleri (pixelRatio, gölge türü, çim oranı), yukarıdan aşağı denenir |
-| `quality.targetFps`, `quality.sampleTime` | Hedef kare hızı ve her kademedeki ölçüm süresi |
+| `quality.presets` | Dişli menüsündeki Yüksek / Orta / Düşük'ün hangi kademeye karşılık geldiği |
+| `quality.targetRatio`, `quality.preferHighRefresh` | Hedef FPS = ekran hızı × oran; 120 Hz ekranda önce 120'nin denenip denenmeyeceği |
+| `quality.downAfter`, `quality.upAfter`, `quality.cooldown` | Kaç sn düşük/yüksek FPS'ten sonra kademe değişeceği; başarısız yükselişin bekleme süresi |
+| `world.groundTexSize`, `world.groundPeriod` | Zemin dokusunun çözünürlüğü ve tekrar genişliği |
 | `world.grassCount`, `world.grassShadowMobile`, `light.shadowMapSize` | Performans / görsel kalite dengesi |
 | `colors.*` | Tüm renkler |
 

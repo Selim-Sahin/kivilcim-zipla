@@ -3,7 +3,10 @@
 //
 //  • Zemin, odakla birlikte kayan tek bir düzlemdir. Rengi dünya
 //    koordinatından gürültüyle hesaplanır; düzlem kaysa da toprak
-//    yamaları yerinde kalır.
+//    yamaları yerinde kalır. Gürültü açılışta BİR KEZ, GPU'da tekrar
+//    eden (periyodik) bir dokuya çizilir (bakeGround); zemin ve çim
+//    her karede yalnızca bu dokuyu okur. Doku: RGB = zemin rengi,
+//    A = toprak oranı (0 çim … 1 toprak).
 //  • Çim tek bir InstancedMesh: her örnek 3 yapraklı bir tutam.
 //    Tutamlar odak çevresindeki bir dikdörtgene "sarılır" (mod/fract),
 //    böylece sabit sayıda tutamla sonsuz çim elde edilir.
@@ -40,6 +43,53 @@ const NOISE_GLSL = /* glsl */ `
   }
 `;
 
+// Periyodik gürültü: kafes koordinatı "per" ile mod alınır → desen
+// kendini dikişsiz tekrar eder (doku kenarları birleşir).
+const PERIODIC_NOISE_GLSL = /* glsl */ `
+  float kvHash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+  float kvPNoise(vec2 p, float per) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = kvHash(mod(i, per));
+    float b = kvHash(mod(i + vec2(1.0, 0.0), per));
+    float c = kvHash(mod(i + vec2(0.0, 1.0), per));
+    float d = kvHash(mod(i + vec2(1.0, 1.0), per));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+`;
+
+// Zemin dokusunu çizen tam ekran shader. vUv (0–1) → dünya konumu p = vUv × P.
+// Her gürültü çağrısının kafes periyodu = frekans × P (P = 20 iken hepsi tam sayı).
+const BAKE_VERTEX = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+const BAKE_FRAGMENT = /* glsl */ `
+  uniform float uP, uDirt;
+  uniform vec3 uGrassDark, uGrassLight, uDirtDark, uDirtLight;
+  varying vec2 vUv;
+  ${PERIODIC_NOISE_GLSL}
+  void main() {
+    vec2 p = vUv * uP;
+    float n = kvPNoise(p * 0.3, 0.3 * uP) * 0.65 + kvPNoise(p * 0.9 + 7.3, 0.9 * uP) * 0.35;
+    float dirt = smoothstep(uDirt, uDirt + 0.05, n);
+    float n1 = kvPNoise(p * 1.3, 1.3 * uP);
+    float n2 = kvPNoise(p * 5.0 + 11.0, 5.0 * uP);
+    vec3 grass = mix(uGrassDark, uGrassLight, n1 * 0.7 + n2 * 0.3);
+    vec3 soil = mix(uDirtDark, uDirtLight, kvPNoise(p * 3.0 + 3.1, 3.0 * uP) * 0.6 + kvPNoise(p * 9.0, 9.0 * uP) * 0.4);
+    float rim = dirt * (1.0 - dirt) * 4.0;          // yama kenarında hafif koyuluk
+    gl_FragColor = vec4(mix(grass, soil, dirt) * (1.0 - rim * 0.12), dirt);
+  }
+`;
+
 // Çim tutamının vertex shader parçası: Three.js'in "begin_vertex"
 // bölümünün yerine geçer ve "transformed" (dünya konumu) üretir.
 const GRASS_VERTEX = /* glsl */ `
@@ -52,7 +102,11 @@ const GRASS_VERTEX = /* glsl */ `
 
   // Alan kenarında ve toprak yamalarında tutamı küçült
   float edge = smoothstep(0.0, 0.06, min(sa, 1.0 - sa)) * smoothstep(0.0, 0.06, min(sb, 1.0 - sb));
+#ifdef KV_LIVE_NOISE
   float dirt = kvDirt(ground, uDirt);
+#else
+  float dirt = textureLod(uGroundTex, ground / uPeriod, 0.0).a;  // açılışta çizilen dokudan
+#endif
   float s = aSeed.w * edge * (1.0 - dirt);
 
   // Rastgele dönüş
@@ -77,8 +131,10 @@ const GRASS_VERTEX = /* glsl */ `
 const _p = new THREE.Vector3();
 
 export class World {
-  constructor(scene, isMobile) {
+  // opts.ground: 'tex' (varsayılan, doku) | 'noise' (eski: her karede gürültü) | 'flat' (düz renk, teşhis)
+  constructor(scene, isMobile, opts = {}) {
     this.scene = scene;
+    this.groundMode = opts.ground || 'tex';
     this.time = 0;
     this.windDir = new THREE.Vector3(W.windDir.x, 0, W.windDir.z).normalize();
 
@@ -98,7 +154,22 @@ export class World {
       uGrassLight: { value: new THREE.Color(C.grassLight) },
       uDirtDark: { value: new THREE.Color(C.dirtDark) },
       uDirtLight: { value: new THREE.Color(C.dirtLight) },
+      uGroundTex: { value: null },
+      uPeriod: { value: W.groundPeriod },
     };
+
+    // Zemin dokusu: sRGB biçiminde saklanır (koyu tonlarda bantlanma olmasın),
+    // tekrar eder ve mipmap'lidir (uzakta titreşmesin). İçeriğini bakeGround çizer.
+    this.groundRT = new THREE.WebGLRenderTarget(W.groundTexSize, W.groundTexSize, {
+      depthBuffer: false,
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter,
+      magFilter: THREE.LinearFilter,
+      wrapS: THREE.RepeatWrapping,
+      wrapT: THREE.RepeatWrapping,
+      colorSpace: THREE.SRGBColorSpace,
+    });
+    this.uniforms.uGroundTex.value = this.groundRT.texture;
 
     // Kameranın bakışına göre zemindeki iki yatay eksen:
     // R = ekranda sağa, U = ekranda yukarı giden yön.
@@ -153,40 +224,79 @@ export class World {
     this.shadowTexel = (2 * L.shadowExtent) / size;
   }
 
+  // Zemin dokusunu GPU'da bir kez çiz (açılışta, ilk kareden önce)
+  bakeGround(renderer) {
+    const u = this.uniforms;
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: BAKE_VERTEX,
+      fragmentShader: BAKE_FRAGMENT,
+      uniforms: {
+        uP: u.uPeriod, uDirt: u.uDirt,
+        uGrassDark: u.uGrassDark, uGrassLight: u.uGrassLight,
+        uDirtDark: u.uDirtDark, uDirtLight: u.uDirtLight,
+      },
+      depthTest: false,
+      depthWrite: false,
+    });
+    const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+    quad.frustumCulled = false;
+    const bakeScene = new THREE.Scene();
+    bakeScene.add(quad);
+    const cam = new THREE.Camera();
+
+    const prevTarget = renderer.getRenderTarget();
+    renderer.setRenderTarget(this.groundRT);
+    renderer.render(bakeScene, cam);
+    renderer.setRenderTarget(prevTarget);
+
+    quad.geometry.dispose();
+    mat.dispose();
+  }
+
   createGround() {
     const geo = new THREE.PlaneGeometry(W.groundSize, W.groundSize, 1, 1);
     geo.rotateX(-Math.PI / 2);
     const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
     const u = this.uniforms;
+    const mode = this.groundMode;
 
-    // onBeforeCompile: Three.js'in hazır shader'ına kendi kodumuzu ekleriz;
-    // böylece ışık, gölge ve sis hesapları aynen çalışmaya devam eder.
-    mat.onBeforeCompile = (shader) => {
-      for (const name of ['uDirt', 'uGrassDark', 'uGrassLight', 'uDirtDark', 'uDirtLight']) {
-        shader.uniforms[name] = u[name];
-      }
-      shader.vertexShader = 'varying vec2 vGround;\n' + shader.vertexShader.replace(
-        '#include <begin_vertex>',
-        '#include <begin_vertex>\n  vGround = (modelMatrix * vec4(transformed, 1.0)).xz;'
-      );
-      shader.fragmentShader = `
-        varying vec2 vGround;
-        uniform float uDirt;
-        uniform vec3 uGrassDark, uGrassLight, uDirtDark, uDirtLight;
-        ${NOISE_GLSL}
-      ` + shader.fragmentShader.replace('#include <color_fragment>', /* glsl */ `
-        #include <color_fragment>
-        {
-          float dirt = kvDirt(vGround, uDirt);
-          float n1 = kvNoise(vGround * 1.3);
-          float n2 = kvNoise(vGround * 5.0 + 11.0);
-          vec3 grass = mix(uGrassDark, uGrassLight, n1 * 0.7 + n2 * 0.3);
-          vec3 soil = mix(uDirtDark, uDirtLight, kvNoise(vGround * 3.0 + 3.1) * 0.6 + kvNoise(vGround * 9.0) * 0.4);
-          float rim = dirt * (1.0 - dirt) * 4.0;          // yama kenarında hafif koyuluk
-          diffuseColor.rgb *= mix(grass, soil, dirt) * (1.0 - rim * 0.12);
+    // Teşhis: düz renk (gürültü de doku okuması da yok)
+    if (mode === 'flat') {
+      mat.color.copy(u.uGrassDark.value).lerp(u.uGrassLight.value, 0.5);
+    } else {
+      // onBeforeCompile: Three.js'in hazır shader'ına kendi kodumuzu ekleriz;
+      // böylece ışık, gölge ve sis hesapları aynen çalışmaya devam eder.
+      mat.onBeforeCompile = (shader) => {
+        for (const name of ['uDirt', 'uGrassDark', 'uGrassLight', 'uDirtDark', 'uDirtLight', 'uGroundTex', 'uPeriod']) {
+          shader.uniforms[name] = u[name];
         }
-      `);
-    };
+        shader.vertexShader = 'varying vec2 vGround;\n' + shader.vertexShader.replace(
+          '#include <begin_vertex>',
+          '#include <begin_vertex>\n  vGround = (modelMatrix * vec4(transformed, 1.0)).xz;'
+        );
+        const body = mode === 'noise'
+          ? /* glsl */ `
+            // ESKİ YÖNTEM (teşhis için): her pikselde 6 gürültü hesabı
+            float dirt = kvDirt(vGround, uDirt);
+            float n1 = kvNoise(vGround * 1.3);
+            float n2 = kvNoise(vGround * 5.0 + 11.0);
+            vec3 grass = mix(uGrassDark, uGrassLight, n1 * 0.7 + n2 * 0.3);
+            vec3 soil = mix(uDirtDark, uDirtLight, kvNoise(vGround * 3.0 + 3.1) * 0.6 + kvNoise(vGround * 9.0) * 0.4);
+            float rim = dirt * (1.0 - dirt) * 4.0;
+            diffuseColor.rgb *= mix(grass, soil, dirt) * (1.0 - rim * 0.12);`
+          : /* glsl */ `
+            // Tek doku okuması (sRGB doku okunurken otomatik olarak doğrusal renge çözülür)
+            diffuseColor.rgb *= texture2D(uGroundTex, vGround / uPeriod).rgb;`;
+        shader.fragmentShader = `
+          varying vec2 vGround;
+          uniform float uDirt, uPeriod;
+          uniform vec3 uGrassDark, uGrassLight, uDirtDark, uDirtLight;
+          uniform sampler2D uGroundTex;
+          ${mode === 'noise' ? NOISE_GLSL : ''}
+        ` + shader.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n{' + body + '\n}');
+      };
+      mat.customProgramCacheKey = () => 'kvGround-' + mode;
+    }
 
     this.ground = new THREE.Mesh(geo, mat);
     this.ground.receiveShadow = true;
@@ -220,16 +330,20 @@ export class World {
     geo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seeds, 4));
 
     const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+    mat.customProgramCacheKey = () => 'kvGrass-' + this.groundMode;
     const u = this.uniforms;
     mat.onBeforeCompile = (shader) => {
-      for (const name of ['uTime', 'uFocus', 'uArea', 'uAxisR', 'uAxisU', 'uWind', 'uWindSpeed', 'uWindDir', 'uDirt']) {
+      for (const name of ['uTime', 'uFocus', 'uArea', 'uAxisR', 'uAxisU', 'uWind', 'uWindSpeed', 'uWindDir', 'uDirt', 'uGroundTex', 'uPeriod']) {
         shader.uniforms[name] = u[name];
       }
+      const live = this.groundMode === 'noise';
       shader.vertexShader = `
+        ${live ? '#define KV_LIVE_NOISE' : ''}
         attribute vec4 aSeed;
-        uniform float uTime, uWind, uWindSpeed, uDirt;
+        uniform float uTime, uWind, uWindSpeed, uDirt, uPeriod;
         uniform vec2 uFocus, uArea, uAxisR, uAxisU, uWindDir;
-        ${NOISE_GLSL}
+        uniform sampler2D uGroundTex;
+        ${live ? NOISE_GLSL : ''}
       ` + shader.vertexShader.replace('#include <begin_vertex>', GRASS_VERTEX);
       // Yaprağın iki yüzü de zemin gibi aydınlansın (arka yüz kararmasın)
       shader.fragmentShader = shader.fragmentShader.replace(
@@ -249,6 +363,7 @@ export class World {
 
   // Kalite ayarı: çizilecek tutam oranı (0–1). Bellek aynı kalır, GPU daha az çizer.
   setGrassRatio(ratio) {
+    this.grass.visible = ratio > 0;
     this.grass.count = Math.max(1, Math.round(this.grassMax * ratio));
   }
 

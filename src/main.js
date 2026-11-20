@@ -9,6 +9,7 @@ import { Game } from './game.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { Quality } from './quality.js';
+import { Settings } from './settings.js';
 
 const params = new URLSearchParams(location.search);
 const canvas = document.getElementById('game');
@@ -16,6 +17,24 @@ const loader = document.getElementById('loader');
 const dpr = window.devicePixelRatio || 1;
 // Dokunmatik birincil girdi → telefon/tablet kabul et (daha hafif ayarlar)
 const isMobile = window.matchMedia('(pointer: coarse)').matches;
+
+// ---------------------------------------------------------------
+//  Teşhis parametreleri (README'de anlatıldı). Herhangi biri varsa
+//  otomatik kalite kapanır, böylece tek bir ayarın FPS etkisi ölçülebilir:
+//    ?fps&pr=1  ?fps&shadow=off|pcf|pcfsoft  ?fps&grass=0|0.5  ?fps&ground=flat|noise
+// ---------------------------------------------------------------
+function readDiagnostics() {
+  const o = {};
+  const pr = parseFloat(params.get('pr'));
+  if (pr > 0) o.pixelRatio = pr;
+  if (['off', 'pcf', 'pcfsoft'].includes(params.get('shadow'))) o.shadow = params.get('shadow');
+  const grass = parseFloat(params.get('grass'));
+  if (grass >= 0) o.grass = Math.min(1, grass);
+  const ground = ['flat', 'noise', 'tex'].includes(params.get('ground')) ? params.get('ground') : 'tex';
+  const any = Object.keys(o).length > 0 || params.has('ground');
+  return { override: any ? o : null, ground };
+}
+const diag = readDiagnostics();
 
 let renderer;
 try {
@@ -38,11 +57,11 @@ const scene = new THREE.Scene();
 // Ortografik kamera: perspektif yok, uzaktaki nesneler küçülmez (izometrik görünüm)
 const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
 
-const world = new World(scene, isMobile);
+const world = new World(scene, isMobile, { ground: diag.ground });
+world.bakeGround(renderer);  // zemin gürültüsü bir kez dokuya çizilir
 const hud = new Hud();
 const game = new Game({ scene, camera, renderer, world, hud });
-// Kalite kademesi 0'ı uygular (pixelRatio, gölge, çim) — ölçüm oyun başlayınca
-const quality = new Quality({ renderer, scene, world });
+const quality = new Quality({ renderer, scene, world, compile: compileScene, override: diag.override });
 
 // Adres sonuna ?debug eklenirse oyun nesneleri tarayıcı konsolundan erişilebilir
 if (params.has('debug')) {
@@ -70,10 +89,11 @@ window.addEventListener('resize', resize);
 resize();
 
 // ---------------------------------------------------------------
-//  Shader ön-derleme: ilk zıplamada / yeni platform tipinde takılma
+//  Shader derleme: ilk zıplamada / yeni platform tipinde takılma
 //  olmasın diye tüm malzemeler yükleme ekranı açıkken derlenir.
+//  Kalite sistemi de gölge türü değişince bunu çağırır ve bitmesini bekler.
 // ---------------------------------------------------------------
-async function precompile() {
+async function compileScene() {
   // Henüz sahnede olmayan platform malzemeleri için geçici küçük kutular
   const temp = new THREE.Group();
   const box = new THREE.BoxGeometry(0.01, 0.01, 0.01);
@@ -94,9 +114,14 @@ async function precompile() {
 
   try {
     await renderer.compileAsync(scene, camera);
-    renderer.render(scene, camera);  // gölge (derinlik) malzemeleri ilk çizimde derlenir
   } finally {
     for (const o of hidden) o.visible = false;
+  }
+  try {
+    // Gölge (derinlik) malzemeleri ilk çizimde derlenir. Gizli nesneler yeniden gizlendi;
+    // geçici kutular 1 cm'lik olduğundan bu kare normal oyun karesinden farksızdır.
+    renderer.render(scene, camera);
+  } finally {
     scene.remove(temp);
     box.dispose();
   }
@@ -108,6 +133,7 @@ async function precompile() {
 const fpsEl = params.has('fps') ? createFpsMeter() : null;
 let fpsFrames = 0;
 let fpsTime = 0;
+let cpuTime = 0;
 let pendingReload = false;  // yeni sürüm hazır, uygun anda sayfayı yenile
 
 function startLoop() {
@@ -116,11 +142,16 @@ function startLoop() {
     // dt: geçen süre (sn). Sekme arka plandan dönünce büyük sıçrama olmasın diye sınırlı.
     const raw = Math.max(0, (now - last) / 1000);
     last = now;
+    // Kalite değişiminde shader'lar derlenirken çizme: ekran son karede kalır,
+    // oyun da duraklar (takılma fizik sıçramasına dönüşmesin).
+    if (quality.busy) return;
     const dt = Math.min(raw, CONFIG.render.maxFrameTime);
 
+    const t0 = performance.now();
     game.update(dt);
     world.update(dt, game.focus);
     renderer.render(scene, camera);
+    cpuTime += performance.now() - t0;  // JS + çizim komutlarının gönderilmesi (GPU'nun kendi işi hariç)
     quality.update(raw);
 
     if (pendingReload && isFreshStart()) location.reload();
@@ -129,8 +160,10 @@ function startLoop() {
       fpsFrames++;
       fpsTime += raw;
       if (fpsTime >= 0.5) {
-        fpsEl.textContent = Math.round(fpsFrames / fpsTime) + ' FPS\n' + quality.describe();
+        const cpu = (cpuTime / fpsFrames).toFixed(1);
+        fpsEl.textContent = `${Math.round(fpsFrames / fpsTime)} FPS · işlemci ${cpu} ms\n` + quality.describe();
         fpsFrames = 0;
+        cpuTime = 0;
         fpsTime = 0;
       }
     }
@@ -167,11 +200,15 @@ function registerServiceWorker() {
 // ---------------------------------------------------------------
 //  Başlat
 // ---------------------------------------------------------------
+const settings = new Settings({ locked: !!diag.override });
 try {
-  await precompile();
+  // Kayıtlı kalite modunu uygula (ekran hızını da ölçer), ardından tüm shader'ları derle
+  await quality.start(settings.mode);
+  await compileScene();
 } catch (err) {
   console.warn('Shader ön-derleme atlandı:', err);
 }
+settings.onChange = (mode) => quality.setMode(mode);
 
 new Input(canvas, {
   onPress: () => game.press(),

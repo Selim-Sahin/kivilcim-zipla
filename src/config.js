@@ -15,18 +15,29 @@ export const CONFIG = {
   },
 
   // ---------- Uyarlanabilir kalite ----------
-  // Oyun açılınca FPS ölçülür. targetFps'in altındaysa bir alt kademeye
-  // inilir ve yeniden ölçülür; hedef tutunca ya da kademe bitince durur.
-  // Sıra: önce çözünürlük (pixelRatio), sonra gölge, en son çim yoğunluğu.
+  // Açılışta ekranın yenileme hızı (60/90/120 Hz…) ölçülür; hedef FPS ona göre seçilir.
+  // ARAMA: her kademe ölçülür, hedef tutmazsa bir alt kademeye inilir.
+  //        120 Hz'de hiçbir kademe ~110 FPS'e yetişemezse hedef kararlı 60'a düşer.
+  // İZLEME: oyun boyunca sürer. Uzun süre hedefin altı → bir kademe in;
+  //        uzun süre bol FPS → bir kademe çık. Başarısız çıkış o kademeyi bir süre "soğumaya" alır.
+  // Kademe değişince shader'ların derlenmesi beklenir, ardından ilk kareler sayılmaz.
   quality: {
-    targetFps: 50,      // bunun altı "takılıyor" sayılır
-    warmup: 0.6,        // açılıştan sonra ölçüme başlamadan beklenen süre (sn)
-    settle: 0.4,        // kademe değişince yeniden derleme takılmasını saymamak için bekleme (sn)
-    sampleTime: 2,      // her kademede FPS ölçüm süresi (sn)
-    // En alt kademe bile ilk ölçümden bu kadar FPS'ten az kazandırdıysa sorun
-    // grafik değildir (ör. pil tasarrufu kare hızını 30'a kilitlemiştir):
-    // gereksiz yere çirkinleştirmemek için en iyi kaliteye geri dönülür.
-    minGain: 4,
+    targetRatio: 0.92,      // hedef FPS = yenileme hızı × bu oran (120 Hz → 110, 60 Hz → 55)
+    lowHz: 60,              // yüksek yenileme tutmazsa inilecek kararlı hız
+    preferHighRefresh: true,// 120 Hz ekranda önce 120'yi dene (false: doğrudan 60 hedefle)
+    warmup: 0.8,            // açılışta ölçüme başlamadan beklenen süre (sn)
+    skipFrames: 12,         // kademe değişip derleme bittikten sonra sayılmayan kare sayısı
+    sampleTime: 1.5,        // aramada her kademenin ölçüm süresi (sn)
+    window: 1,              // izlemede tek ölçüm penceresinin süresi (sn)
+    downMargin: 0.9,        // izlemede "hedefin altı" eşiği = hedef × bu oran (histerezis)
+    downAfter: 4,           // bu kadar sn üst üste hedefin altı → bir kademe in
+    upAfter: 12,            // bu kadar sn üst üste bol FPS → bir kademe çık
+    upHeadroom: 1.15,       // "bol FPS" = hedef × bu oran (ekran hızına kilitliyse ekran hızının %97'si)
+    cooldown: 30,           // başarısız kademeye yeniden çıkmadan beklenen süre (sn), her başarısızlıkta 2 katı
+    cooldownMax: 300,
+    storageKey: 'kivilcim.kalite',      // manuel seçim (Otomatik/Yüksek/Orta/Düşük)
+    autoLevelKey: 'kivilcim.otoKademe', // otomatik modun son kademesi (sonraki açılış oradan başlar)
+    presets: { yuksek: 0, orta: 4, dusuk: 7 },  // manuel seçimlerin karşılığı olan kademeler
     // shadow: 'pcfsoft' (yumuşak) | 'pcf' (sert kenarlı, daha ucuz) | 'off'
     // grass: çim tutamı oranı (1 = world.grassCount'un tamamı)
     levels: [
@@ -148,6 +159,8 @@ export const CONFIG = {
     windSpeed: 1.6,
     windDir: { x: 0.8, z: 0.6 },
     dirtThreshold: 0.63,     // büyük = daha az toprak yaması
+    groundTexSize: 1024,     // zemin dokusunun çözünürlüğü (açılışta bir kez çizilir)
+    groundPeriod: 20,        // dokunun tekrar ettiği dünya genişliği (gürültü frekanslarıyla tam bölünmeli)
     fogNear: 21,
     fogFar: 48,
   },
