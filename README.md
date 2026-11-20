@@ -9,11 +9,13 @@ masaüstü ve mobil tarayıcıda açılır.
 
 ## Kullanılan teknolojiler
 
-- **Three.js `0.170.0`** — WebGL tabanlı 3B çizim; `index.html` içindeki importmap ile jsDelivr CDN'den yüklenir.
+- **Three.js `0.170.0`** — WebGL tabanlı 3B çizim; küçültülmüş sürümü `vendor/three/` altında, importmap ile depodan yüklenir.
 - **Saf HTML + CSS + JavaScript (ES modülleri)** — derleme adımı ya da paket yöneticisi yok.
 - **Pointer Events** — fare ve dokunmatik ekran için tek giriş sistemi.
 - **Verlet entegrasyonu** — pelerin fiziği; **InstancedMesh + özel shader** — rüzgârlı çim.
 - **localStorage** — en yüksek skoru saklar.
+- **PWA (manifest + service worker)** — ana ekrana eklenebilir; ikinci açılış önbellekten gelir, çevrimdışı çalışır.
+- **Uyarlanabilir kalite** — açılışta FPS ölçülür, telefon yetişemiyorsa çözünürlük, gölge ve çim yoğunluğu kademeli düşürülür.
 - **GitHub Pages** — statik barındırma.
 - Robot, pelerin, platformlar, çim ve dokular tamamen kodla üretilir; harici model/görsel dosyası yoktur.
 
@@ -42,7 +44,8 @@ python -m http.server 8000 --bind 0.0.0.0
 - Bu bilgisayarda: <http://localhost:8000>
 - Aynı ağdaki telefon/tablette: `http://<bilgisayarın-yerel-IP'si>:8000`
   (Windows'ta IP için `ipconfig`; güvenlik duvarı Python için izin isteyebilir — "Özel ağ"ı onayla.)
-- Kare hızını görmek için adresin sonuna `?fps` ekle: `http://localhost:8000/?fps`
+- Kare hızını ve kalite kademesini görmek için adresin sonuna `?fps` ekle: `http://localhost:8000/?fps`
+  (ör. `58 FPS · K1 · 1.5x · yumuşak gölge · çim %100`; ölçüm sürerken `ölçülüyor` yazar)
 - `?debug` eklenirse tarayıcı konsolundan `game` nesnesine erişebilirsin (ör. `game.score`, `game.state`).
 
 ## GitHub Pages'te yayınlama
@@ -54,14 +57,34 @@ python -m http.server 8000 --bind 0.0.0.0
 
 Tüm yollar görelidir (`./style.css`, `./src/main.js`), bu yüzden alt klasörde sorunsuz çalışır.
 
+### Yeni sürüm yayınlarken (önemli)
+
+Oyun telefonda önbellekten açılır. Oyuncuların yeni sürümü alması için `sw.js`'teki
+`VERSION` değişmelidir. Commit'ten **önce** proje kökünde şunu çalıştır:
+
+```bash
+python tools/sw_surum.py
+```
+
+Betik dosya içeriklerinden bir özet hesaplayıp `VERSION`'a yazar; yeni bir oyun dosyası
+eklediysen ve `sw.js`'teki `ASSETS` listesine koymayı unuttuysan uyarır. Telefon bir
+sonraki açılışta yeni sürümü fark eder, arka planda indirir ve oyuncu henüz puan
+almamışsa sayfayı kendiliğinden yeniler.
+
 ## Dosya yapısı
 
 ```
-index.html        importmap, tuval ve arayüz katmanları
+index.html        importmap, modulepreload, tuval, yükleme ekranı ve arayüz katmanları
 style.css         tam ekran düzen, dokunmatik ayarları, arayüz stilleri
+sw.js             service worker: önbellek (sürüm numaralı), çevrimdışı çalışma
+manifest.json     PWA bilgileri (ad, ikonlar, tam ekran)
+icons/            uygulama ikonları (SVG + PNG)
+vendor/three/     Three.js 0.170.0 (küçültülmüş) + kullanılan iki eklenti, MIT lisansı
+tools/
+  sw_surum.py     sw.js VERSION'unu dosya içeriklerinden günceller (yayından önce)
 src/
   config.js       TÜM ayarlanabilir değerler (zıplama, yerçekimi, pelerin, zorluk, renkler…)
-  main.js         renderer, sahne, kamera, boyutlandırma, ana döngü
+  main.js         renderer, sahne, kamera, shader ön-derleme, ana döngü, service worker kaydı
   game.js         durum makinesi, zıplama yayı, iniş kontrolü, puan, kamera takibi
   robot.js        Kıvılcım'ın inşası, çömelme/uzama, dönme, güç halkası
   cape.js         Verlet parçacık tabanlı pelerin fiziği
@@ -69,6 +92,7 @@ src/
   platforms.js    4 bahçe objesi, zorluk eğrisi, ekrandan çıkanları silme
   input.js        Pointer Events + Boşluk tuşu
   hud.js          puan, en iyi skor, puan balonları, oyun bitti ekranı
+  quality.js      uyarlanabilir kalite: FPS ölçümü ve kademe değiştirme
 ```
 
 ## Ayarlar (`src/config.js`)
@@ -84,7 +108,9 @@ Değeri değiştirip sayfayı yenilemen yeterli. Sık kullanılanlar:
 | `difficulty.*` | Platform boyutu ve aralığının puana göre değişimi |
 | `cape.iterations`, `cape.stiffness`, `cape.bendStiffness` | Pelerinin sertliği |
 | `cape.airDrag`, `cape.flutter` | Havada savrulma ve dalgalanma |
-| `world.grassCount`, `light.shadowMapSize` | Performans / görsel kalite dengesi |
+| `quality.levels` | Kalite kademeleri (pixelRatio, gölge türü, çim oranı), yukarıdan aşağı denenir |
+| `quality.targetFps`, `quality.sampleTime` | Hedef kare hızı ve her kademedeki ölçüm süresi |
+| `world.grassCount`, `world.grassShadowMobile`, `light.shadowMapSize` | Performans / görsel kalite dengesi |
 | `colors.*` | Tüm renkler |
 
 ## Pelerin fiziği kısaca

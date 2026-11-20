@@ -199,12 +199,19 @@ export class World {
 
     // Her tutam için 4 sayı: alan içi konum (x, y), dönüş, boy.
     // Konumlar ızgara + rastgele kaydırma ile dağıtılır (kümelenme olmasın).
+    // Izgara hücreleri karıştırılır: kalite düşünce yalnızca ilk N tutam
+    // çizilir (setGrassRatio) ve bu ilk N tutam yine tüm alana eşit yayılır.
     const seeds = new Float32Array(count * 4);
     const nx = Math.ceil(Math.sqrt(count));
     const ny = Math.ceil(count / nx);
+    const cells = Array.from({ length: nx * ny }, (_, k) => k);
+    for (let k = cells.length - 1; k > 0; k--) {
+      const j = Math.floor(Math.random() * (k + 1));
+      [cells[k], cells[j]] = [cells[j], cells[k]];
+    }
     for (let i = 0; i < count; i++) {
-      const gx = i % nx;
-      const gy = Math.floor(i / nx);
+      const gx = cells[i] % nx;
+      const gy = Math.floor(cells[i] / nx);
       seeds[i * 4 + 0] = (gx + Math.random()) / nx;
       seeds[i * 4 + 1] = (gy + Math.random()) / ny;
       seeds[i * 4 + 2] = Math.random();
@@ -235,8 +242,19 @@ export class World {
     // Sınır küresi anlamsız olduğundan görünürlük testi kapatılır.
     this.grass = new THREE.InstancedMesh(geo, mat, count);
     this.grass.frustumCulled = false;
-    this.grass.receiveShadow = true;
+    this.grass.receiveShadow = !isMobile || W.grassShadowMobile;
+    this.grassMax = count;
     this.scene.add(this.grass);
+  }
+
+  // Kalite ayarı: çizilecek tutam oranı (0–1). Bellek aynı kalır, GPU daha az çizer.
+  setGrassRatio(ratio) {
+    this.grass.count = Math.max(1, Math.round(this.grassMax * ratio));
+  }
+
+  // Kalite ayarı: güneş gölge yapsın mı
+  setShadows(on) {
+    this.sun.castShadow = on;
   }
 
   // Ekran boyutu değişince çim alanını görünür bölgeye göre ayarla

@@ -6,17 +6,42 @@
   <meta name="theme-color" content="#efe3c6">
   <meta name="description" content="Kıvılcım: bahçede platformdan platforma zıplayan küçük robot.">
   <title>Kıvılcım — Bahçe Zıplaması</title>
-  <link rel="icon" href="data:,">
+
+  <!-- PWA: ana ekrana eklenebilir, çevrimdışı çalışır -->
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Kıvılcım">
+
   <link rel="stylesheet" href="./style.css">
-  <!-- Three.js sabit sürüm: kodda "three" ve "three/addons/..." bu adreslere çözülür -->
+
+  <!-- Three.js sabit sürüm (0.170.0), depodan: kodda "three" ve "three/addons/..." bu adreslere çözülür -->
   <script type="importmap">
   {
     "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      "three": "./vendor/three/three.module.min.js",
+      "three/addons/": "./vendor/three/addons/"
     }
   }
   </script>
+
+  <!-- Tüm modülleri baştan paralel indir: tarayıcı import zincirini tek tek keşfetmeyi beklemesin -->
+  <link rel="modulepreload" href="./vendor/three/three.module.min.js">
+  <link rel="modulepreload" href="./vendor/three/addons/utils/BufferGeometryUtils.js">
+  <link rel="modulepreload" href="./vendor/three/addons/geometries/RoundedBoxGeometry.js">
+  <link rel="modulepreload" href="./src/main.js">
+  <link rel="modulepreload" href="./src/config.js">
+  <link rel="modulepreload" href="./src/world.js">
+  <link rel="modulepreload" href="./src/game.js">
+  <link rel="modulepreload" href="./src/robot.js">
+  <link rel="modulepreload" href="./src/cape.js">
+  <link rel="modulepreload" href="./src/platforms.js">
+  <link rel="modulepreload" href="./src/input.js">
+  <link rel="modulepreload" href="./src/hud.js">
+  <link rel="modulepreload" href="./src/quality.js">
 </head>
 <body>
   <canvas id="game" aria-label="Oyun alanı"></canvas>
@@ -41,6 +66,12 @@
       <div id="go-new" class="go-new" hidden>Yeni rekor!</div>
       <div class="go-hint">Tekrar oynamak için dokun</div>
     </div>
+  </div>
+
+  <!-- Yükleme ekranı: modüller inerken ve shader'lar derlenirken görünür; main.js kaldırır -->
+  <div id="loader" role="status" aria-live="polite">
+    <div class="ld-spark"></div>
+    <div class="ld-text">Kıvılcım ısınıyor…</div>
   </div>
 
   <div id="error" hidden>

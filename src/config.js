@@ -9,10 +9,36 @@
 export const CONFIG = {
   // ---------- Görüntü ve performans ----------
   render: {
-    maxPixelRatio: 2,       // yüksek DPI ekranlarda en fazla 2× çözünürlük
     antialiasMaxDpr: 1.5,   // DPR bundan büyükse kenar yumuşatma kapalı (ekran zaten keskin)
     exposure: 1.0,          // genel parlaklık (ton eşleme pozlaması)
     maxFrameTime: 1 / 30,   // bir karede ilerletilecek en uzun süre (takılmada sıçramayı önler)
+  },
+
+  // ---------- Uyarlanabilir kalite ----------
+  // Oyun açılınca FPS ölçülür. targetFps'in altındaysa bir alt kademeye
+  // inilir ve yeniden ölçülür; hedef tutunca ya da kademe bitince durur.
+  // Sıra: önce çözünürlük (pixelRatio), sonra gölge, en son çim yoğunluğu.
+  quality: {
+    targetFps: 50,      // bunun altı "takılıyor" sayılır
+    warmup: 0.6,        // açılıştan sonra ölçüme başlamadan beklenen süre (sn)
+    settle: 0.4,        // kademe değişince yeniden derleme takılmasını saymamak için bekleme (sn)
+    sampleTime: 2,      // her kademede FPS ölçüm süresi (sn)
+    // En alt kademe bile ilk ölçümden bu kadar FPS'ten az kazandırdıysa sorun
+    // grafik değildir (ör. pil tasarrufu kare hızını 30'a kilitlemiştir):
+    // gereksiz yere çirkinleştirmemek için en iyi kaliteye geri dönülür.
+    minGain: 4,
+    // shadow: 'pcfsoft' (yumuşak) | 'pcf' (sert kenarlı, daha ucuz) | 'off'
+    // grass: çim tutamı oranı (1 = world.grassCount'un tamamı)
+    levels: [
+      { pixelRatio: 2,    shadow: 'pcfsoft', grass: 1 },
+      { pixelRatio: 1.5,  shadow: 'pcfsoft', grass: 1 },
+      { pixelRatio: 1.25, shadow: 'pcfsoft', grass: 1 },
+      { pixelRatio: 1,    shadow: 'pcfsoft', grass: 1 },
+      { pixelRatio: 1,    shadow: 'pcf',     grass: 1 },
+      { pixelRatio: 1,    shadow: 'off',     grass: 1 },
+      { pixelRatio: 1,    shadow: 'off',     grass: 0.6 },
+      { pixelRatio: 1,    shadow: 'off',     grass: 0.35 },
+    ],
   },
 
   // ---------- Kamera ----------
@@ -114,6 +140,7 @@ export const CONFIG = {
     groundSize: 120,
     grassCount: 9000,        // masaüstünde çim tutamı sayısı
     grassCountMobile: 5000,  // dokunmatik cihazlarda
+    grassShadowMobile: false, // dokunmatikte çim gölge almasın (binlerce yaprakta gölge örneklemek pahalı)
     bladeHeight: [0.16, 0.26],
     bladeWidth: 0.17,        // yaprak eni / yaprak boyu oranı
     grassMargin: 4,          // çim alanı ekran dışına bu kadar taşar
