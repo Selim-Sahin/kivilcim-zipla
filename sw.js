@@ -7,7 +7,7 @@
 //  sürümü arka planda indirir, eski önbelleği siler; sayfa da uygun
 //  anda (oyuncu henüz puan almamışken) kendini yeniler.
 // =============================================================
-const VERSION = 'v-44c7a96104';
+const VERSION = 'v-a47d1185a4';
 const CACHE = 'kivilcim-' + VERSION;
 
 // Oyunun ihtiyaç duyduğu dosyaların tamamı (ilk açılışta hepsi indirilir)

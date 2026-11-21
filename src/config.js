@@ -9,11 +9,12 @@
 export const CONFIG = {
   // ---------- Görüntü ve performans ----------
   render: {
-    mobilePixelRatio: 1.5,  // telefonda başlangıç çözünürlük çarpanı (kenar yumuşatma her zaman açık)
+    mobilePixelRatio: 1.5,  // telefonda Otomatik kipin başlangıç ölçeği (kayıtlı sonuç yoksa)
     exposure: 1.0,          // genel parlaklık (ton eşleme pozlaması)
-    // Kare kapısı: en çok bu kadar FPS çiz (60 | 120 | 0 = sınırsız). 120 Hz ekranda 60
-    // seçilirse her ikinci yenileme atlanır; kareler eşit aralıkla (16,7 ms) gelir.
-    // Adres çubuğundan denemek için: ?cap=120
+    // Kare kapısı: en çok bu kadar FPS çiz. 120 Hz ekranda 60 ile her ikinci yenileme
+    // atlanır; kareler eşit aralıkla (16,7 ms) gelir. Oyunda kare hızını menü ve
+    // Otomatik kip belirler; bu değer yalnızca teşhis kipinde geçerlidir.
+    // Adres çubuğundan sabitlemek için: ?cap=60 | ?cap=120 | ?cap=0 (sınırsız)
     fpsCap: 60,
     // Oyun mantığı sabit adımlarla ilerler (kare hızından bağımsız, zıplama her FPS'te aynı).
     // Çizimde robot, kamera ve pelerin iki adım arasında ara değerlenir.
@@ -21,43 +22,40 @@ export const CONFIG = {
     maxSteps: 8,            // bir karede en çok bu kadar adım (uzun takılmada kalan süre atılır)
   },
 
-  // ---------- Uyarlanabilir kalite ----------
-  // Açılışta ekranın yenileme hızı (60/90/120 Hz…) ölçülür; hedef FPS ona göre seçilir.
-  // ARAMA: her kademe ölçülür, hedef tutmazsa bir alt kademeye inilir.
-  //        120 Hz'de hiçbir kademe ~110 FPS'e yetişemezse hedef kararlı 60'a düşer.
-  // İZLEME: oyun boyunca sürer. Uzun süre hedefin altı → bir kademe in;
-  //        uzun süre bol FPS → bir kademe çık. Başarısız çıkış o kademeyi bir süre "soğumaya" alır.
-  // Kademe değişince shader'ların derlenmesi beklenir, ardından ilk kareler sayılmaz.
+  // ---------- Kalite ve dinamik çözünürlük (quality.js) ----------
+  // Otomatik kipte oyun sırasında YALNIZCA çözünürlük ölçeği değişir (shader derlenmez).
+  // Karar ölçüsü: son `window` sn'deki kare yükünün 90. yüzdeliği (p90, ms).
+  //   p90 > hedef × downRatio                → bir adım in
+  //   p90 < hedef × upRatio, upHold sn boyunca → bir adım çık
+  // Hedef aralık kare kapısından gelir (60 → 16,7 ms; 120 → 8,3 ms).
   quality: {
-    targetRatio: 0.92,      // hedef FPS = yenileme hızı × bu oran (120 Hz → 110, 60 Hz → 55)
-    lowHz: 60,              // yüksek yenileme tutmazsa inilecek kararlı hız
-    preferHighRefresh: true,// 120 Hz ekranda önce 120'yi dene (false: doğrudan 60 hedefle)
-    warmup: 0.8,            // açılışta ölçüme başlamadan beklenen süre (sn)
-    skipFrames: 12,         // kademe değişip derleme bittikten sonra sayılmayan kare sayısı
-    sampleTime: 1.5,        // aramada her kademenin ölçüm süresi (sn)
-    window: 1,              // izlemede tek ölçüm penceresinin süresi (sn)
-    downMargin: 0.9,        // izlemede "hedefin altı" eşiği = hedef × bu oran (histerezis)
-    downAfter: 4,           // bu kadar sn üst üste hedefin altı → bir kademe in
-    upAfter: 12,            // bu kadar sn üst üste bol FPS → bir kademe çık
-    upHeadroom: 1.15,       // "bol FPS" = hedef × bu oran (ekran hızına kilitliyse ekran hızının %97'si)
-    cooldown: 30,           // başarısız kademeye yeniden çıkmadan beklenen süre (sn), her başarısızlıkta 2 katı
-    cooldownMax: 300,
-    storageKey: 'kivilcim.kalite',      // manuel seçim (Otomatik/Yüksek/Orta/Düşük)
-    autoLevelKey: 'kivilcim.otoKademe2', // otomatik modun son kademesi (kademeler değişti → yeni anahtar)
-    hzKey: 'kivilcim.ekranHz',          // arka planda ölçülen ekran yenileme hızı
-    presets: { ultra: 'ultra', yuksek: 0, orta: 3, dusuk: 5 },  // menü seçimlerinin karşılığı olan kademeler
-    // shadow: 'off' = sahte gölgeler (shadows.js) | 'pcf' = gerçek gölge | 'pcfsoft' (yalnızca teşhis)
-    // grass: çim tutamı oranı (1 = world.grassCount'un tamamı)
-    levels: [
-      { pixelRatio: 2,    shadow: 'off', grass: 1 },
-      { pixelRatio: 1.5,  shadow: 'off', grass: 1 },
-      { pixelRatio: 1.25, shadow: 'off', grass: 1 },
-      { pixelRatio: 1,    shadow: 'off', grass: 1 },
-      { pixelRatio: 1,    shadow: 'off', grass: 0.6 },
-      { pixelRatio: 1,    shadow: 'off', grass: 0.35 },
-    ],
-    // Menüdeki "Ultra": gerçek gölge (PCF). Yalnızca masaüstünde sunulur.
-    ultra: { pixelRatio: 2, shadow: 'pcf', grass: 1 },
+    minScale: 1.0,          // çözünürlük ölçeği aralığı (cihazın DPR'ını geçmez)
+    maxScale: 2.0,
+    scaleStep: 0.1,
+    window: 3,              // p90 ölçüm penceresi (sn)
+    downRatio: 1.15,
+    upRatio: 0.7,
+    upHold: 10,             // çıkmak için "bol pay"ın sürmesi gereken süre (sn)
+    settle: 2,              // her değişiklikten sonra ölçüme başlamadan beklenen süre (sn)
+    check: 0.25,            // p90 kaç sn'de bir hesaplanır
+    lateRatio: 1.3,         // aralığı hedef × bunu aşan kare "gecikmiş" sayılır (yükü = aralık)
+    highRateP90: 7,         // en yüksek ölçekte p90 bunun altındaysa (ms) 120 FPS denenir
+    highRateMinHz: 90,      // 120 FPS denemesi için en az ekran hızı
+    curtainMin: 0.35,       // "ayarlanıyor" perdesinin en kısa süresi (sn)
+    log: true,              // kararları tarayıcı konsoluna yaz
+    // Menü kipleri. scale: çözünürlük ölçeği, grass: çim oranı (1 = world.grassCount),
+    // shadow: 'off' = sahte gölgeler (shadows.js) | 'pcf' = gerçek gölge, rate: sabit kare hızı
+    modes: {
+      oto:    { grass: 1, shadow: 'off' },                          // ölçek dinamik
+      pil:    { scale: 1.0, grass: 0.35, shadow: 'off', rate: 60 }, // Pil dostu
+      yuksek: { scale: 2.0, grass: 1, shadow: 'off' },
+      ultra:  { scale: 2.0, grass: 1, shadow: 'pcf' },              // yalnızca masaüstü
+    },
+    storageKey: 'kivilcim.kalite',    // menü kipi
+    rateKey: 'kivilcim.kareHizi',     // menüdeki kare hızı (60 | 120)
+    autoKey: 'kivilcim.dinamik',      // otomatik kipin sonucu: { scale, cap }
+    hzKey: 'kivilcim.ekranHz',        // arka planda ölçülen ekran yenileme hızı
+    oldKeys: ['kivilcim.otoKademe', 'kivilcim.otoKademe2'],  // eski kademe sistemi (silinir)
   },
 
   // ---------- Kamera ----------

@@ -76,6 +76,47 @@ function percentile(sorted, p) {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
 }
 
+// GPU'nun bir karede harcadığı süre (EXT_disjoint_timer_query_webgl2). Her tarayıcıda
+// yoktur (ör. Firefox varsayılan olarak vermez); yoksa `available` false olur ve
+// dinamik çözünürlük yalnızca işlemci süresine + geciken karelere bakar.
+// Sonuç 1–3 kare gecikmeyle gelir; istatistik için sorun değil.
+export class GpuTimer {
+  constructor(gl) {
+    this.gl = gl;
+    this.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+    this.pending = [];
+    this.free = [];
+    this.active = null;
+    this.last = null;  // ms
+  }
+
+  get available() { return !!this.ext; }
+
+  begin() {
+    if (!this.ext || this.active || this.pending.length > 3) return;
+    this.active = this.free.pop() || this.gl.createQuery();
+    this.gl.beginQuery(this.ext.TIME_ELAPSED_EXT, this.active);
+  }
+
+  end() {
+    if (!this.active) return;
+    this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);
+    this.pending.push(this.active);
+    this.active = null;
+  }
+
+  poll() {
+    if (!this.ext || !this.pending.length) return;
+    const gl = this.gl;
+    const disjoint = gl.getParameter(this.ext.GPU_DISJOINT_EXT);  // ölçüm bozulduysa sonucu at
+    while (this.pending.length && gl.getQueryParameter(this.pending[0], gl.QUERY_RESULT_AVAILABLE)) {
+      const q = this.pending.shift();
+      if (!disjoint) this.last = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6;
+      this.free.push(q);
+    }
+  }
+}
+
 export class Perf {
   constructor() {
     this.hz = loadHz();       // null: henüz ölçülmedi

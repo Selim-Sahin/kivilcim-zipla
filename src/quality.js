@@ -1,316 +1,359 @@
 // =============================================================
-//  quality.js — Uyarlanabilir kalite
+//  quality.js — Grafik kalitesi ve dinamik çözünürlük
 //
-//  Modlar:
-//    'oto'    : ARAMA → İZLEME (aşağıda)
-//    'yuksek' | 'orta' | 'dusuk' : sabit kademe (CONFIG.quality.presets)
-//    'ultra'  : gerçek gölge (PCF), yalnızca masaüstü (CONFIG.quality.ultra)
-//    'teshis' : URL parametreleriyle (?pr=1&shadow=off&grass=0) sabit ayar;
-//               otomatik sistem kapalı, böylece tek tek etkiler ölçülebilir.
+//  Menü kipleri (settings.js):
+//    'oto'    : Otomatik. Oyun sırasında YALNIZCA çözünürlük ölçeği değişir
+//               (dinamik çözünürlük, ScaleController). 120 Hz ekranda kare hızı
+//               60'tan başlar; bol pay varsa 120 denenir.
+//    'pil'    : Pil dostu. 60 FPS, 1.0×, seyrek çim. Sabit.
+//    'yuksek' : En yüksek ölçek (2.0×, cihazın DPR'ını geçmez), sahte gölge. Sabit.
+//    'ultra'  : Yüksek + gerçek (PCF) gölge. Yalnızca masaüstü.
+//    'teshis' : URL parametreleri (?pr=1&shadow=pcf&grass=0) — README'ye bak.
 //
-//  ARAMA : Her kademe sampleTime boyunca ölçülür. Hedef tutarsa izlemeye
-//          geçilir; tutmazsa bir alt kademe. Hiçbiri yetmezse önce düşük
-//          hedefe (60) göre, o da olmazsa en yüksek FPS'i veren kademe seçilir.
-//  İZLEME: downAfter sn hedefin altı → bir kademe in. upAfter sn bol FPS →
-//          bir kademe çık ("deneme"); deneme tutmazsa geri in ve o kademeyi
-//          soğumaya al (30 sn, sonra 60, 120 … en çok cooldownMax).
-//
-//  Her kademe değişiminde gölge türü değişiyorsa malzemeler yeniden
-//  derlenir: derleme (compileAsync) bitene kadar "busy" olur — ana döngü bu
-//  sırada çizim yapmaz — ve ardından skipFrames kare ölçüme katılmaz.
+//  Shader derlemesi gerektiren hiçbir şey (gölge türü) oyun sırasında kendiliğinden
+//  değişmez. Çim yoğunluğu ve gölge yalnızca menüden değişir; değişirken kısa bir
+//  "ayarlanıyor" perdesi gösterilir ve oyun bu sırada durur.
 // =============================================================
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 
 const Q = CONFIG.quality;
-const SHADOW_TYPES = { pcfsoft: THREE.PCFSoftShadowMap, pcf: THREE.PCFShadowMap };
-const SHADOW_NAMES = { pcfsoft: 'gerçek gölge (yumuşak)', pcf: 'gerçek gölge', off: 'sahte gölge' };
-const ULTRA = 'ultra';  // kademe listesinin dışındaki özel kademe
-const MODE_NAMES = { oto: 'otomatik', ultra: 'ultra', yuksek: 'yüksek', orta: 'orta', dusuk: 'düşük', teshis: 'teşhis' };
-const COMMON_HZ = [30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240];
+const EPS = 1e-6;
+const MODE_NAMES = { oto: 'otomatik', pil: 'pil dostu', yuksek: 'yüksek', ultra: 'ultra', teshis: 'teşhis' };
+const SHADOW_NAMES = { off: 'sahte gölge', pcf: 'gerçek gölge', pcfsoft: 'gerçek gölge (yumuşak)' };
+export const MODES = ['oto', 'pil', 'yuksek', 'ultra'];
 
+function percentile(sorted, p) {
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+}
+
+// =============================================================
+//  ScaleController — dinamik çözünürlük kararları (tarayıcıdan bağımsız,
+//  tools/dinamik-sim.html aynı sınıfı yapay kare süreleriyle sınar)
+//
+//  Her çizilen karede bir "yük" örneği alınır:
+//    • kare zamanında geldiyse: karenin işi (işlemci, varsa GPU süresiyle)
+//    • geciktiyse (aralık > hedef × lateRatio): kare aralığının kendisi
+//  Kare kapısı 60'tayken aralık hep ~16,7 ms olduğundan yalnız aralığa bakmak
+//  "ne kadar pay var" sorusunu cevaplayamazdı; iş süresi bunu gösterir.
+//
+//  Karar ölçüsü: son 3 sn'deki örneklerin 90. yüzdeliği (p90).
+//    p90 > hedef × 1.15                → bir adım in
+//    p90 < hedef × 0.7, 10 sn boyunca  → bir adım çık
+//    en yüksek ölçekte p90 < 7 ms, 10 sn boyunca (120 Hz ekran) → 120 FPS dene;
+//    120'de inmek gerekirse 60'a dönülür ve bu oturumda 120 bir daha denenmez.
+//  Her değişiklikten sonra 2 sn beklenir ve ölçüm sıfırlanır. Daha önce
+//  yukarı çıkılan bir değere ikinci kez geri düşülürse tavan orada sabitlenir.
+// =============================================================
+export class ScaleController {
+  // scale: başlangıç ölçeği, min/max: ölçek aralığı, cap: 60 | 120 (0 = sınırsız)
+  // allowHigh: 120'ye geçmeye izin (menüdeki kare hızı), lockCap: kare hızına dokunma (?cap)
+  constructor({ scale, min, max, cap = 60, allowHigh = true, lockCap = false, hz = 60, now = 0 }) {
+    this.min = min;
+    this.max = Math.max(min, max);
+    this.ceiling = this.max;   // salınım görülünce düşürülen tavan
+    this.step = Q.scaleStep;
+    this.scale = this.clamp(scale);
+    this.cap = cap;
+    this.allowHigh = allowHigh;
+    this.lockCap = lockCap;
+    this.hz = hz;
+    this.highFailed = false;   // bu oturumda 120 denendi ve tutmadı
+    this.upFrom = new Set();   // yukarı çıkılan değerler
+    this.backs = new Map();    // değer → oraya kaç kez geri düşüldü
+    this.reset(now);
+  }
+
+  clamp(s) {
+    const snapped = Math.round(s / this.step) * this.step;
+    return Math.round(Math.min(this.ceiling, Math.max(this.min, snapped)) * 1000) / 1000;
+  }
+
+  // Hedef kare aralığı (ms): kare kapısı ile ekran hızının küçüğü
+  get target() {
+    const fps = this.cap > 0 ? Math.min(this.cap, this.hz) : this.hz;
+    return 1000 / fps;
+  }
+
+  reset(now) {
+    this.waitUntil = now + Q.settle * 1000;
+    this.times = [];
+    this.loads = [];
+    this.since = null;       // ölçüm penceresinin başladığı an
+    this.goodSince = null;   // "bol pay" koşulunun başladığı an
+    this.nextCheck = 0;
+    this.p50 = null;
+    this.p90 = null;
+    this.state = 'bekliyor';
+  }
+
+  canGoHigh() {
+    return !this.lockCap && this.allowHigh && !this.highFailed && this.cap > 0 && this.cap < 120
+      && this.hz >= Q.highRateMinHz && this.scale >= this.max - EPS;
+  }
+
+  // now: ms, interval: önceki çizimden bu yana geçen süre (ms), work: karenin işi (ms).
+  // Değişiklik olursa { scale?, cap?, why } döndürür.
+  sample(now, interval, work) {
+    if (now < this.waitUntil) return null;
+    if (this.since === null) this.since = now;
+    const T = this.target;
+    this.times.push(now);
+    this.loads.push(interval > T * Q.lateRatio ? interval : work);
+    const from = now - Q.window * 1000;
+    let drop = 0;
+    while (drop < this.times.length && this.times[drop] < from) drop++;
+    if (drop) { this.times.splice(0, drop); this.loads.splice(0, drop); }
+
+    if (now - this.since < Q.window * 1000) { this.state = 'ölçülüyor'; return null; }
+    if (now < this.nextCheck) return null;
+    this.nextCheck = now + Q.check * 1000;
+
+    const sorted = this.loads.slice().sort((a, b) => a - b);
+    this.p50 = percentile(sorted, 0.5);
+    this.p90 = percentile(sorted, 0.9);
+
+    if (this.p90 > T * Q.downRatio) return this.down(now);
+
+    const high = this.canGoHigh();
+    const good = high
+      ? this.p90 < Q.highRateP90
+      : this.scale < this.ceiling - EPS && this.p90 < T * Q.upRatio;
+    if (!good) { this.goodSince = null; this.state = 'dengede'; return null; }
+    if (this.goodSince === null) this.goodSince = now;
+    this.state = 'pay var';
+    if (now - this.goodSince < Q.upHold * 1000) return null;
+    return high ? this.goHigh(now) : this.up(now);
+  }
+
+  down(now) {
+    if (this.cap >= 120 && !this.lockCap) {
+      this.cap = 60;
+      this.highFailed = true;
+      this.reset(now);
+      return { cap: 60, why: '120 FPS tutmadı → 60' };
+    }
+    if (this.scale <= this.min + EPS) {
+      this.reset(now);  // inilecek yer yok; yeniden ölç
+      return null;
+    }
+    const s = this.clamp(this.scale - this.step);
+    let why = 'yük yüksek';
+    if (this.upFrom.has(s)) {
+      const n = (this.backs.get(s) || 0) + 1;
+      this.backs.set(s, n);
+      if (n >= 2 && s < this.ceiling) {
+        this.ceiling = s;
+        why += `; ${s}'e ikinci kez geri düşüldü → tavan ${s}`;
+      }
+    }
+    this.scale = s;
+    this.reset(now);
+    return { scale: s, why };
+  }
+
+  up(now) {
+    this.upFrom.add(this.scale);
+    this.scale = this.clamp(this.scale + this.step);
+    this.reset(now);
+    return { scale: this.scale, why: 'pay var' };
+  }
+
+  goHigh(now) {
+    this.cap = 120;
+    this.reset(now);
+    return { cap: 120, why: 'en yüksek ölçekte bol pay → 120 FPS dene' };
+  }
+}
+
+// =============================================================
+//  Quality — kipleri uygular, dinamik çözünürlüğü çalıştırır
+// =============================================================
 export class Quality {
-  // compile: sahnedeki tüm malzemeleri derleyen async fonksiyon (main.js sağlar)
+  // compile: sahnedeki tüm malzemeleri derleyen async fonksiyon (main.js)
+  // curtain: { show(): Promise, hide() } — "ayarlanıyor" perdesi (settings.js)
   // override: teşhis için URL'den gelen sabit değerler ({ pixelRatio?, shadow?, grass? })
-  constructor({ renderer, scene, world, compile, override = null, isMobile = false }) {
-    this.isMobile = isMobile;
+  // capOverride: ?cap=… ile sabitlenen kare kapısı (null: menü/otomatik karar verir)
+  constructor({ renderer, scene, world, compile, curtain, override = null, capOverride = null, isMobile = false }) {
     this.renderer = renderer;
     this.scene = scene;
     this.world = world;
     this.compile = compile;
+    this.curtain = curtain;
     this.override = override;
-    this.dpr = window.devicePixelRatio || 1;
+    this.capOverride = capOverride;
+    this.isMobile = isMobile;
+    const dpr = window.devicePixelRatio || 1;
+    // Ölçek aralığı 1.0–2.0; cihazın DPR'ını geçmez (DPR 1 olan ekranda 2× anlamsız)
+    this.maxScale = Math.max(Q.minScale, Math.min(Q.maxScale, dpr));
 
     this.mode = override ? 'teshis' : 'oto';
-    this.phase = 'sabit';   // 'arama' | 'izleme' | 'sabit'
-    this.index = 0;
-    this.applied = null;
-    this.busy = false;      // shader derleniyor → ana döngü bekler
-    this.skip = 0;
-    this.wait = 0;
-    this.hz = 60;
-    this.tier = 'low';      // 'high' (ekran hızı) | 'low' (kararlı 60)
-    this.scores = {};       // kademe → aramada ölçülen FPS
-    this.cool = new Map();  // kademe → { until, dur }
-    this.trial = null;      // yukarı deneme: { from, until }
-    this.lastFps = null;
-    this.resetSample();
+    this.rate = 120;        // menüdeki kare hızı üst sınırı (60 | 120)
+    this.hz = 60;           // ekran yenileme hızı (perf.js ölçer, main.js günceller)
+    this.applied = null;    // { scale, grass, shadow }
+    this.cap = 60;          // geçerli kare kapısı
+    this.ctrl = null;       // yalnızca otomatik kipte
+    this.busy = false;      // perde açık / shader derleniyor → ana döngü bekler
 
-    // Sekme arka plana geçince ölçüm bozulmasın: dönüşte baştan say
-    document.addEventListener('visibilitychange', () => {
-      this.resetSample();
-      this.skip = Math.max(this.skip, Q.skipFrames);
-    });
+    // Sekme arka plandan dönünce ölçüm baştan başlasın
+    document.addEventListener('visibilitychange', () => this.ctrl?.reset(performance.now()));
   }
 
-  // ---------- Hedefler ----------
-  get highTarget() { return this.hz * Q.targetRatio; }
-  get lowTarget() { return Math.min(this.hz, Q.lowHz) * Q.targetRatio; }
-  get target() { return this.tier === 'high' ? this.highTarget : this.lowTarget; }
-  // "Bol FPS": hedefin üstünde pay var. FPS ekran hızına kilitliyse (daha fazlası
-  // ölçülemez) ekran hızının %97'si yeterli sayılır.
-  get upTarget() { return Math.min(this.target * Q.upHeadroom, this.hz * 0.97); }
+  get fpsCap() { return this.cap; }
 
-  // Ekran yenileme hızını ölç: hiçbir şey çizmeden ~30 kare arası sürenin ortancası.
-  // (Ağır çizim yapılırken ölçülse oyunun kendi yavaşlığı karışırdı.)
-  async measureRefresh() {
-    const deltas = [];
-    await Promise.race([
-      new Promise((resolve) => {
-        let prev = null;
-        const tick = (t) => {
-          if (prev !== null) deltas.push(t - prev);
-          prev = t;
-          if (deltas.length < 30) requestAnimationFrame(tick); else resolve();
-        };
-        requestAnimationFrame(tick);
-      }),
-      new Promise((resolve) => setTimeout(resolve, 1500)),  // sekme gizliyse bekleme
-    ]);
-    if (deltas.length < 10) return 60;
-    deltas.sort((a, b) => a - b);
-    const hz = 1000 / deltas[deltas.length >> 1];
-    return COMMON_HZ.reduce((best, h) => (Math.abs(h - hz) < Math.abs(best - hz) ? h : best), 60);
-  }
-
-  // Açılışta bir kez: ekran hızını ölç, kayıtlı modu uygula
-  async start(mode) {
-    this.hz = await this.measureRefresh();
-    if (this.override) return this.setMode('teshis');
-    return this.setMode(mode);
-  }
-
-  async setMode(mode) {
-    if (this.override) mode = 'teshis';
-    if (!(mode in MODE_NAMES)) mode = 'oto';
-    if (mode === 'ultra' && this.isMobile) mode = 'yuksek';  // gerçek gölge telefonda sunulmaz
-    this.mode = mode;
-    this.trial = null;
-    this.resetSample();
-
+  // Kipin ayarları: { scale, grass, shadow, cap }
+  plan(mode) {
+    const cap = (fallback) => (this.capOverride !== null ? this.capOverride : fallback);
+    if (this.override) {
+      const o = this.override;
+      const dpr = window.devicePixelRatio || 1;
+      return {
+        scale: o.pixelRatio ? Math.min(dpr, o.pixelRatio) : this.maxScale,
+        grass: o.grass ?? 1,
+        shadow: o.shadow ?? 'off',
+        cap: cap(CONFIG.render.fpsCap),
+      };
+    }
+    const m = Q.modes[mode];
     if (mode === 'oto') {
-      this.tier = Q.preferHighRefresh && this.hz >= 90 ? 'high' : 'low';
-      this.scores = {};
-      this.cool.clear();
-      this.phase = 'arama';
-      this.wait = Q.warmup;
-      await this.apply(this.loadAutoLevel());
+      const saved = this.loadAuto();
+      const start = this.isMobile ? Math.min(CONFIG.render.mobilePixelRatio, this.maxScale) : this.maxScale;
+      return {
+        scale: saved ? saved.scale : start,
+        grass: m.grass,
+        shadow: m.shadow,
+        cap: cap(this.rate >= 120 && saved?.cap === 120 ? 120 : 60),
+      };
+    }
+    return {
+      scale: Math.min(m.scale, this.maxScale),
+      grass: m.grass,
+      shadow: m.shadow,
+      cap: cap(m.rate || this.rate),
+    };
+  }
+
+  // Açılışta (yükleme ekranı açıkken): perde yok
+  async start(mode, rate) {
+    this.rate = rate;
+    await this.setMode(this.override ? 'teshis' : mode, false);
+  }
+
+  async setMode(mode, useCurtain = true) {
+    if (this.override) mode = 'teshis';
+    else if (!MODES.includes(mode) || (mode === 'ultra' && this.isMobile)) mode = 'oto';
+    this.mode = mode;
+    const p = this.plan(mode);
+    this.cap = p.cap;
+    this.ctrl = mode === 'oto'
+      ? new ScaleController({
+        scale: p.scale,
+        min: Q.minScale,
+        max: this.maxScale,
+        cap: p.cap,
+        allowHigh: this.rate >= 120,
+        lockCap: this.capOverride !== null,
+        hz: this.hz,
+        now: performance.now(),
+      })
+      : null;
+    await this.applyLook({ scale: this.ctrl ? this.ctrl.scale : p.scale, grass: p.grass, shadow: p.shadow }, useCurtain);
+  }
+
+  // Menüdeki kare hızı (60 | 120). Shader'a dokunmaz, perde gerekmez.
+  setRate(rate) {
+    this.rate = rate;
+    if (this.override || this.capOverride !== null) return;
+    if (this.ctrl) {
+      this.ctrl.allowHigh = rate >= 120;
+      this.ctrl.highFailed = false;  // kullanıcı 120'ye yeniden izin verdi
+      if (rate < 120 && this.cap >= 120) this.setCap(60);
+      this.ctrl.reset(performance.now());
     } else {
-      this.phase = 'sabit';
-      await this.apply(mode === 'teshis' ? 0 : Q.presets[mode]);
+      this.cap = Q.modes[this.mode].rate || rate;
     }
   }
 
-  // ---------- Kademe uygulama ----------
-  // Seviyenin bu cihazdaki gerçek karşılığı (DPR 1 olan ekranda 2× istemenin anlamı yok)
-  effective(i) {
-    const l = { ...(i === ULTRA ? Q.ultra : Q.levels[i]), ...(this.override || {}) };
-    return { pixelRatio: Math.min(this.dpr, l.pixelRatio), shadow: l.shadow, grass: l.grass };
+  setCap(cap) {
+    this.cap = cap;
+    if (this.ctrl) this.ctrl.cap = cap;
+    this.saveAuto();
   }
 
-  async apply(i) {
-    if (i !== ULTRA) i = Math.max(0, Math.min(Q.levels.length - 1, i | 0));
-    const next = this.effective(i);
+  // Çözünürlük, çim, gölge. Çim ya da gölge değişiyorsa perde açılır; gölge
+  // türü shader'a gömülü olduğundan malzemeler yeniden derlenir.
+  async applyLook(next, useCurtain) {
     const prev = this.applied;
-    this.index = i;
-    this.applied = next;
-    this.resetSample();
-    this.skip = Q.skipFrames;
-    if (this.mode === 'oto' && i !== ULTRA) this.saveAutoLevel(i);
-
-    if (!prev || prev.pixelRatio !== next.pixelRatio) {
-      this.renderer.setPixelRatio(next.pixelRatio);
+    const heavy = !!prev && (prev.grass !== next.grass || prev.shadow !== next.shadow);
+    const curtain = heavy && useCurtain && this.curtain;
+    if (curtain) {
+      this.busy = true;
+      await this.curtain.show();
     }
-    if (!prev || prev.grass !== next.grass) {
-      this.world.setGrassRatio(next.grass);
-    }
-    if (!prev || prev.shadow !== next.shadow) {
-      const on = next.shadow !== 'off';
-      this.renderer.shadowMap.enabled = on;
-      if (on) this.renderer.shadowMap.type = SHADOW_TYPES[next.shadow];
-      this.world.setShadows(on);
-      if (prev) {
-        // Gölge türü shader'ın içine gömülüdür: malzemeler yeniden derlenmeli.
-        this.scene.traverse((o) => {
-          const m = o.material;
-          if (Array.isArray(m)) m.forEach((x) => { x.needsUpdate = true; });
-          else if (m) m.needsUpdate = true;
-        });
-        // Derleme bitene kadar bekle; ana döngü bu sırada çizmez (takılma ölçüme girmez)
-        this.busy = true;
-        try {
-          await this.compile();
-        } catch (err) {
-          console.warn('Kalite: derleme beklenemedi', err);
-        } finally {
-          this.busy = false;
-          this.skip = Q.skipFrames;
-          this.resetSample();
+    const t0 = performance.now();
+    try {
+      this.applied = { ...next };
+      if (!prev || prev.scale !== next.scale) this.renderer.setPixelRatio(next.scale);
+      if (!prev || prev.grass !== next.grass) this.world.setGrassRatio(next.grass);
+      if (!prev || prev.shadow !== next.shadow) {
+        const on = next.shadow !== 'off';
+        this.renderer.shadowMap.enabled = on;
+        if (on) this.renderer.shadowMap.type = next.shadow === 'pcfsoft' ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+        this.world.setShadows(on);
+        if (prev) {
+          this.scene.traverse((o) => {
+            const m = o.material;
+            if (Array.isArray(m)) m.forEach((x) => { x.needsUpdate = true; });
+            else if (m) m.needsUpdate = true;
+          });
+          this.busy = true;
+          try { await this.compile(); } catch (err) { console.warn('Kalite: derleme beklenemedi', err); }
         }
       }
-    }
-  }
-
-  // Görünür bir fark yaratan bir alt (dir = +1) ya da üst (dir = -1) kademe; yoksa -1
-  neighbor(dir) {
-    const cur = JSON.stringify(this.applied);
-    for (let i = this.index + dir; i >= 0 && i < Q.levels.length; i += dir) {
-      if (JSON.stringify(this.effective(i)) !== cur) return i;
-    }
-    return -1;
-  }
-
-  coolDown(i) {
-    const prev = this.cool.get(i);
-    const dur = prev ? Math.min(prev.dur * 2, Q.cooldownMax) : Q.cooldown;
-    this.cool.set(i, { dur, until: performance.now() + dur * 1000 });
-  }
-
-  isCooling(i) {
-    const c = this.cool.get(i);
-    return !!c && performance.now() < c.until;
-  }
-
-  resetSample() {
-    this.frames = 0;
-    this.time = 0;
-    this.below = 0;  // izleme: üst üste hedefin altında geçen süre
-    this.above = 0;  // izleme: üst üste bol FPS ile geçen süre
-  }
-
-  // ---------- Her kare ----------
-  // raw = sınırlanmamış kare süresi (sn)
-  update(raw) {
-    if (this.busy || this.phase === 'sabit' || document.hidden) return;
-    if (this.wait > 0) { this.wait -= raw; return; }
-    if (this.skip > 0) { this.skip--; return; }
-
-    this.frames++;
-    this.time += raw;
-    const span = this.phase === 'arama' ? Q.sampleTime : Q.window;
-    if (this.time < span) return;
-
-    const fps = this.frames / this.time;
-    this.lastFps = fps;
-    this.frames = 0;
-    this.time = 0;
-    if (this.phase === 'arama') this.searchStep(fps);
-    else this.monitorStep(fps, span);
-  }
-
-  searchStep(fps) {
-    this.scores[this.index] = fps;
-    if (fps >= this.target) {
-      this.phase = 'izleme';
-      this.resetSample();
-      return;
-    }
-    this.coolDown(this.index);  // bu kademe şimdilik yetmiyor
-    const next = this.neighbor(+1);
-    if (next >= 0) {
-      this.apply(next);
-      return;
-    }
-    // Liste bitti. Yüksek hedef (ör. 110) hiçbir kademede tutmadıysa: kararlı 60'a geç
-    // ve ona yeten EN KALİTELİ kademeyi seç; o da yoksa en yüksek FPS'i vereni.
-    if (this.tier === 'high') this.tier = 'low';
-    const measured = Object.entries(this.scores).map(([i, f]) => [Number(i), f]);
-    const ok = measured.filter(([, f]) => f >= this.target).sort((a, b) => a[0] - b[0]);
-    const pick = ok.length ? ok[0][0] : measured.sort((a, b) => b[1] - a[1])[0][0];
-    for (const [i] of ok) this.cool.delete(i);  // yeni hedefe yeten kademeler artık engelli değil
-    this.phase = 'izleme';
-    if (pick !== this.index) this.apply(pick); else this.resetSample();
-  }
-
-  monitorStep(fps, span) {
-    this.below = fps < this.target * Q.downMargin ? this.below + span : 0;
-    this.above = fps >= this.upTarget ? this.above + span : 0;
-
-    // Yukarı deneme süresi sorunsuz geçtiyse o kademenin soğuma kaydını sil
-    if (this.trial && performance.now() > this.trial.until) {
-      this.cool.delete(this.index);
-      this.trial = null;
-    }
-
-    if (this.below >= Q.downAfter) {
-      if (this.trial) {
-        // Deneme tutmadı: geri in, bu kademeyi (giderek uzayan) soğumaya al
-        const from = this.trial.from;
-        this.coolDown(this.index);
-        this.trial = null;
-        this.apply(from);
-        return;
+    } finally {
+      if (curtain) {
+        const left = Q.curtainMin * 1000 - (performance.now() - t0);
+        if (left > 0) await new Promise((r) => setTimeout(r, left));
+        this.curtain.hide();
       }
-      const next = this.neighbor(+1);
-      if (next >= 0) {
-        this.coolDown(this.index);
-        this.apply(next);
-      } else if (this.tier === 'high') {
-        this.tier = 'low';  // en alttayız ve yüksek hedef tutmuyor → kararlı 60
-        this.resetSample();
-      } else {
-        this.resetSample();
-      }
-      return;
-    }
-
-    if (this.above >= Q.upAfter) {
-      // 120 Hz ekranda kararlı 60'tayken FPS yüksek hedefe de yetiyorsa hedefi yükselt
-      if (this.tier === 'low' && Q.preferHighRefresh && this.hz >= 90 && fps >= this.highTarget) {
-        this.tier = 'high';
-        this.resetSample();
-        return;
-      }
-      const up = this.neighbor(-1);
-      if (up >= 0 && !this.isCooling(up)) {
-        this.trial = { from: this.index, until: performance.now() + Q.downAfter * 3000 };
-        this.apply(up);
-      } else {
-        this.above = 0;
-      }
+      this.busy = false;
+      this.ctrl?.reset(performance.now());
     }
   }
 
-  // ---------- Kalıcılık ----------
-  // Kayıt yoksa: masaüstünde en yüksek kademe, telefonda çözünürlüğü
-  // CONFIG.render.mobilePixelRatio'yu aşmayan ilk kademe (kenar yumuşatma açık olduğu için)
-  defaultLevel() {
-    if (!this.isMobile) return 0;
-    const i = Q.levels.findIndex((l) => l.pixelRatio <= CONFIG.render.mobilePixelRatio);
-    return i >= 0 ? i : 0;
+  // Her çizilen karede (main.js). interval, work: ms
+  frame(now, interval, work) {
+    const c = this.ctrl;
+    if (!c || this.busy || document.hidden) return;
+    c.hz = this.hz;
+    const change = c.sample(now, interval, work);
+    if (!change) return;
+    if (change.scale !== undefined) {
+      this.applied.scale = change.scale;
+      this.renderer.setPixelRatio(change.scale);  // yalnızca çizim tamponu boyutu: shader derlenmez
+    }
+    if (change.cap !== undefined) this.cap = change.cap;
+    this.lastChange = change.why;
+    this.saveAuto();
+    if (Q.log) console.info(`[Kıvılcım] ölçek ${c.scale}× · ${this.cap} FPS — ${change.why}`);
   }
 
-  loadAutoLevel() {
+  // ---------- Kalıcılık: otomatik kipin sonucu (ölçek, kare hızı) ----------
+  loadAuto() {
     try {
-      const v = parseInt(localStorage.getItem(Q.autoLevelKey), 10);
-      return Number.isFinite(v) && v >= 0 && v < Q.levels.length ? v : this.defaultLevel();
+      const v = JSON.parse(localStorage.getItem(Q.autoKey));
+      if (!v || !(v.scale >= Q.minScale && v.scale <= Q.maxScale)) return null;
+      return { scale: Math.min(v.scale, this.maxScale), cap: v.cap === 120 ? 120 : 60 };
     } catch (err) {
-      return this.defaultLevel();
+      return null;
     }
   }
 
-  saveAutoLevel(i) {
-    try { localStorage.setItem(Q.autoLevelKey, String(i)); } catch (err) { /* önemsiz */ }
+  saveAuto() {
+    if (!this.ctrl) return;
+    try {
+      localStorage.setItem(Q.autoKey, JSON.stringify({ scale: this.ctrl.scale, cap: this.cap }));
+    } catch (err) { /* önemsiz */ }
   }
 
   // ---------- ?fps göstergesi ----------
@@ -318,13 +361,17 @@ export class Quality {
     const a = this.applied;
     if (!a) return '';
     const grass = a.grass > 0 ? `çim %${Math.round(a.grass * 100)}` : 'çim yok';
-    let line2 = `${MODE_NAMES[this.mode]} · ${this.hz} Hz`;
-    if (this.mode === 'oto') {
-      line2 += ` · hedef ${Math.round(this.target)} · ${this.busy ? 'derleniyor' : this.phase}`;
-      if (this.trial) line2 += ' (deneme)';
+    const c = this.ctrl;
+    let line1 = `${MODE_NAMES[this.mode]} · ölçek ${a.scale.toFixed(2).replace(/0$/, '')}×`;
+    if (c) {
+      line1 += ` (${c.min}–${c.max}`;
+      if (c.ceiling < c.max) line1 += `, tavan ${c.ceiling}`;
+      line1 += `) · ${c.state}`;
+      if (c.state === 'pay var') line1 += ` ${Math.floor((performance.now() - c.goodSince) / 1000)}/${Q.upHold} sn`;
     }
-    const ground = this.world.groundMode === 'tex' ? '' : ` · zemin ${this.world.groundMode}`;
-    const name = this.index === ULTRA ? 'Ultra' : `K${this.index}`;
-    return `${name} · ${a.pixelRatio}x · ${SHADOW_NAMES[a.shadow]} · ${grass}${ground}\n${line2}`;
+    const lines = [line1, `${SHADOW_NAMES[a.shadow]} · ${grass}${this.world.groundMode === 'tex' ? '' : ` · zemin ${this.world.groundMode}`}`];
+    if (c?.p90 != null) lines.push(`yük p50 ${c.p50.toFixed(1)} · p90 ${c.p90.toFixed(1)} ms`);
+    if (this.lastChange) lines.push(`son karar: ${this.lastChange}`);
+    return lines.join('\n');
   }
 }

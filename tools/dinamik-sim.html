@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dinamik çözünürlük simülasyonu</title>
+<!--
+  quality.js'teki ScaleController'ı (oyundaki kodun AYNISI) yapay kare süreleriyle çalıştırır.
+  Kare süresine ±%40 rastgele gürültü eklenir; sistemin salınım yapmadığı gösterilir.
+  Çalıştırmak için proje kökünde `python -m http.server 8000` ve
+  http://localhost:8000/tools/dinamik-sim.html
+-->
+<script type="importmap">
+{ "imports": { "three": "../vendor/three/three.module.min.js", "three/addons/": "../vendor/three/addons/" } }
+</script>
+<style>
+  body { margin: 16px; background: #faf6ec; color: #2b241b; font: 14px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 20px; }
+  h2 { font-size: 16px; margin: 22px 0 4px; }
+  pre { background: #fff; border: 1px solid #ddd3bf; border-radius: 8px; padding: 8px 10px; overflow-x: auto; font-size: 12px; }
+  svg { display: block; width: 100%; max-width: 900px; height: auto; background: #fff; border: 1px solid #ddd3bf; border-radius: 8px; }
+  table { border-collapse: collapse; font-size: 13px; }
+  td, th { border: 1px solid #ddd3bf; padding: 3px 8px; text-align: right; }
+  th { background: #f1e8d4; }
+  td:first-child, th:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<h1>Dinamik çözünürlük simülasyonu</h1>
+<p>Her karenin maliyeti = işlemci + GPU (ölçek² ile büyür), her kareye <b>±%40</b> düzgün dağılımlı gürültü.
+Kare, maliyeti ekran yenilemesine (vsync) yuvarlanarak gelir; kare kapısı 60/120 uygulanır.
+Grafiklerde turuncu: ölçek, mavi kesik: kare kapısı 120 iken.</p>
+<div id="out">Çalışıyor…</div>
+<script type="module">
+import { ScaleController } from '../src/quality.js';
+
+function rng(seed) {  // mulberry32
+  return () => {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// cost(scale, tSec) → { cpu, gpu } (ms, gürültüsüz)
+// gpuTimer: true → iş = max(cpu, gpu) ölçülebiliyor; false → yalnızca cpu görülür (ör. Firefox)
+function simulate({ hz, cost, gpuTimer = true, start, max = 2, allowHigh = true, seconds = 600, noise = 0.4, seed = 1, noPin = false }) {
+  const r = rng(seed);
+  const vs = 1000 / hz;
+  const ctrl = new ScaleController({ scale: start, min: 1, max, cap: 60, allowHigh, hz, now: 0 });
+  if (noPin) ctrl.upFrom = { has: () => false, add() {} };  // karşılaştırma: tavan kuralı kapalı
+  const events = [];
+  const track = [[0, ctrl.scale, ctrl.cap]];
+  let t = 0;
+  let prevCost = 0;
+  let late = 0;
+  let frames = 0;
+  while (t < seconds * 1000) {
+    const cap = ctrl.cap;
+    const capInt = cap > 0 ? Math.max(vs, Math.ceil((1000 / cap - 2) / vs - 1e-9) * vs) : vs;
+    const interval = Math.max(capInt, Math.ceil(prevCost / vs - 1e-9) * vs);
+    t += interval;
+    const base = cost(ctrl.scale, t / 1000);
+    const n = 1 + (r() * 2 - 1) * noise;
+    const cpu = base.cpu * n;
+    const gpu = base.gpu * n;
+    prevCost = Math.max(cpu, gpu);
+    frames++;
+    if (interval > (1000 / Math.min(cap || hz, hz)) * 1.5) late++;
+    const ch = ctrl.sample(t, interval, gpuTimer ? prevCost : cpu);
+    if (ch) {
+      events.push({ t: t / 1000, scale: ctrl.scale, cap: ctrl.cap, why: ch.why });
+      track.push([t / 1000, ctrl.scale, ctrl.cap]);
+    }
+  }
+  track.push([seconds, ctrl.scale, ctrl.cap]);
+  // Yön değişimi (çıkış ardından iniş ya da tersi) = salınım
+  let reversals = 0;
+  let lastDir = 0;
+  let prev = { scale: start, cap: 60 };
+  for (const e of events) {
+    const dir = Math.sign((e.scale - prev.scale) + (e.cap - prev.cap) / 600);
+    if (dir && lastDir && dir !== lastDir) reversals++;
+    if (dir) lastDir = dir;
+    prev = e;
+  }
+  const lateHalf = events.filter((e) => e.t > seconds / 2).length;
+  return { events, track, reversals, lateHalf, final: ctrl.scale, cap: ctrl.cap, ceiling: ctrl.ceiling, lateFrames: late / frames, seconds };
+}
+
+function chart(res, maxScale = 2) {
+  const W = 900, H = 150, P = 30;
+  const x = (s) => P + (s / res.seconds) * (W - P - 8);
+  const y = (v) => H - 20 - ((v - 1) / (maxScale - 1 || 1)) * (H - 40);
+  let d = '';
+  let hi = '';
+  for (let i = 0; i < res.track.length; i++) {
+    const [t, s, c] = res.track[i];
+    d += (i ? `H${x(t).toFixed(1)}V${y(s).toFixed(1)}` : `M${x(t).toFixed(1)},${y(s).toFixed(1)}`);
+    const next = res.track[i + 1];
+    if (c >= 120 && next) hi += `<line x1="${x(t)}" x2="${x(next[0])}" y1="12" y2="12" stroke="#2f6fb3" stroke-width="4" stroke-dasharray="6 3"/>`;
+  }
+  let grid = '';
+  for (let v = 1; v <= maxScale + 1e-9; v += 0.5) grid += `<line x1="${P}" x2="${W - 8}" y1="${y(v)}" y2="${y(v)}" stroke="#eee"/><text x="2" y="${y(v) + 4}" font-size="11">${v.toFixed(1)}</text>`;
+  for (let s = 0; s <= res.seconds; s += 60) grid += `<text x="${x(s) - 8}" y="${H - 4}" font-size="11">${s}s</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}">${grid}${hi}<path d="${d}" fill="none" stroke="#c4672b" stroke-width="2.5"/></svg>`;
+}
+
+function log(res) {
+  return res.events.map((e) => `${e.t.toFixed(1).padStart(6)} sn  ölçek ${e.scale.toFixed(1)}  ${e.cap} FPS  — ${e.why}`).join('\n') || '(değişiklik yok)';
+}
+
+const html = [];
+const summary = {};
+const SCEN = [
+  ['A. Orta telefon, 120 Hz, GPU zamanlayıcılı, 2.0× ile başlar',
+    { hz: 120, start: 2.0, cost: (s) => ({ cpu: 3, gpu: 1.5 + 5 * s * s }) }],
+  ['B. Güçlü bilgisayar, 120 Hz, 1.0× ile başlar → 2.0× ve 120 FPS',
+    { hz: 120, start: 1.0, cost: (s) => ({ cpu: 1.5, gpu: 0.5 + 0.8 * s * s }) }],
+  ['C. Zayıf telefon, 60 Hz: 1.0× bile yetmiyor',
+    { hz: 60, start: 1.5, cost: (s) => ({ cpu: 4, gpu: 10 + 6 * s * s }) }],
+  ['D. GPU zamanlayıcısı OLMAYAN telefon (ör. Firefox), 120 Hz: işlemci boş görünür, GPU sınırda',
+    { hz: 120, start: 1.5, gpuTimer: false, cost: (s) => ({ cpu: 3, gpu: 5 + 4 * s * s }) }],
+  ['D′. Aynısı, "iki kez geri düşünce tavan" kuralı KAPALI (karşılaştırma)',
+    { hz: 120, start: 1.5, gpuTimer: false, noPin: true, cost: (s) => ({ cpu: 3, gpu: 5 + 4 * s * s }) }],
+  ['E. Yük değişimi: A cihazı, 200–320 sn arası her kare 1,4 kat pahalı (ısınma / kalabalık sahne)',
+    { hz: 120, start: 1.6, cost: (s, t) => { const k = t > 200 && t < 320 ? 1.4 : 1; return { cpu: 3 * k, gpu: (1.5 + 5 * s * s) * k }; } }],
+];
+for (const [name, opt] of SCEN) {
+  const res = simulate(opt);
+  summary[name[0] + (name[1] === '′' ? '′' : '')] = { changes: res.events.length, reversals: res.reversals, secondHalf: res.lateHalf, final: res.final, cap: res.cap, ceiling: res.ceiling };
+  html.push(`<h2>${name}</h2>${chart(res)}<pre>${log(res)}\n\nSon: ölçek ${res.final}× · ${res.cap} FPS · tavan ${res.ceiling} · değişiklik ${res.events.length} · yön değişimi ${res.reversals} · son 5 dk'da değişiklik ${res.lateHalf}</pre>`);
+}
+
+// Monte Carlo: rastgele cihazlar, rastgele tohumlar
+function monte(label, n, make) {
+  let changes = 0, revs = 0, maxRev = 0, lateChanges = 0, runsLate = 0;
+  for (let i = 0; i < n; i++) {
+    const r = rng(1000 + i);
+    const res = simulate({ ...make(r), seed: 7 + i });
+    changes += res.events.length;
+    revs += res.reversals;
+    maxRev = Math.max(maxRev, res.reversals);
+    lateChanges += res.lateHalf;
+    if (res.lateHalf > 0) runsLate++;
+  }
+  return { label, n, avgChanges: changes / n, avgRev: revs / n, maxRev, avgLate: lateChanges / n, runsLate };
+}
+const mc = [
+  monte('GPU zamanlayıcılı, 120 Hz', 150, (r) => ({ hz: 120, start: 1 + Math.round(r() * 10) / 10, cost: ((g, c) => (s) => ({ cpu: c, gpu: 1 + g * s * s }))(1 + r() * 8, 1 + r() * 4) })),
+  monte('GPU zamanlayıcılı, 60 Hz', 150, (r) => ({ hz: 60, start: 1 + Math.round(r() * 10) / 10, cost: ((g, c) => (s) => ({ cpu: c, gpu: 1 + g * s * s }))(1 + r() * 8, 1 + r() * 4) })),
+  monte('Zamanlayıcısız (yalnız işlemci), 120 Hz', 150, (r) => ({ hz: 120, gpuTimer: false, start: 1 + Math.round(r() * 10) / 10, cost: ((g, c) => (s) => ({ cpu: c, gpu: 1 + g * s * s }))(1 + r() * 8, 1 + r() * 4) })),
+  monte('Zamanlayıcısız, tavan kuralı KAPALI', 150, (r) => ({ hz: 120, gpuTimer: false, noPin: true, start: 1 + Math.round(r() * 10) / 10, cost: ((g, c) => (s) => ({ cpu: c, gpu: 1 + g * s * s }))(1 + r() * 8, 1 + r() * 4) })),
+];
+html.push(`<h2>Rastgele 150'şer cihaz (10 dk, ±%40 gürültü)</h2><table><tr><th>Durum</th><th>ort. değişiklik</th><th>ort. yön değişimi</th><th>en çok yön değişimi</th><th>ort. son 5 dk değişiklik</th><th>son 5 dk'da değişen cihaz</th></tr>${
+  mc.map((m) => `<tr><td>${m.label}</td><td>${m.avgChanges.toFixed(1)}</td><td>${m.avgRev.toFixed(2)}</td><td>${m.maxRev}</td><td>${m.avgLate.toFixed(2)}</td><td>${m.runsLate}/${m.n}</td></tr>`).join('')}</table>`);
+
+document.getElementById('out').innerHTML = html.join('');
+window.simResult = { summary, mc };
+</script>
+</body>
+</html>

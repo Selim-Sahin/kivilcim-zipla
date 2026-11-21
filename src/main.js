@@ -9,8 +9,8 @@ import { Game } from './game.js';
 import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { Quality } from './quality.js';
-import { Settings } from './settings.js';
-import { Perf, mark, browserName } from './perf.js';
+import { Settings, Curtain } from './settings.js';
+import { Perf, GpuTimer, mark, browserName } from './perf.js';
 
 mark('kv-moduller');  // buraya gelindiyse tüm modüller indi ve çalıştı
 const params = new URLSearchParams(location.search);
@@ -37,9 +37,9 @@ function readDiagnostics() {
 }
 const diag = readDiagnostics();
 
-// Kare kapısı: config'teki değer, denemek için ?cap=60 | ?cap=120 | ?cap=0 (sınırsız)
+// Kare kapısını menü ve Otomatik kip belirler; ?cap=60 | ?cap=120 | ?cap=0 (sınırsız) sabitler
 const capParam = parseInt(params.get('cap'), 10);
-const fpsCap = capParam >= 0 ? capParam : CONFIG.render.fpsCap;
+const capOverride = capParam >= 0 ? capParam : null;
 const perf = new Perf();
 
 let renderer;
@@ -60,6 +60,7 @@ renderer.shadowMap.enabled = false;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.NeutralToneMapping;
 renderer.toneMappingExposure = CONFIG.render.exposure;
+const gpuTimer = new GpuTimer(renderer.getContext());
 
 const scene = new THREE.Scene();
 // Ortografik kamera: perspektif yok, uzaktaki nesneler küçülmez (izometrik görünüm)
@@ -70,7 +71,10 @@ world.bakeGround(renderer);  // zemin gürültüsü bir kez dokuya çizilir
 mark('kv-zemin');
 const hud = new Hud();
 const game = new Game({ scene, camera, renderer, world, hud });
-const quality = new Quality({ renderer, scene, world, compile: compileScene, override: diag.override, isMobile });
+const quality = new Quality({
+  renderer, scene, world, compile: compileScene, curtain: new Curtain(),
+  override: diag.override, capOverride, isMobile,
+});
 
 // Adres sonuna ?debug eklenirse oyun nesneleri tarayıcı konsolundan erişilebilir
 if (params.has('debug')) {
@@ -100,7 +104,7 @@ resize();
 // ---------------------------------------------------------------
 //  Shader derleme: ilk zıplamada / yeni platform tipinde takılma
 //  olmasın diye tüm malzemeler yükleme ekranı açıkken derlenir.
-//  Kalite sistemi de gölge türü değişince bunu çağırır ve bitmesini bekler.
+//  Kalite sistemi de gölge türü menüden değişince bunu çağırır ve bitmesini bekler.
 // ---------------------------------------------------------------
 async function compileScene() {
   // Henüz sahnede olmayan platform malzemeleri için geçici küçük kutular
@@ -139,7 +143,7 @@ async function compileScene() {
 // ---------------------------------------------------------------
 //  Ana döngü
 //
-//  1) Kare kapısı: fpsCap = 60 iken 120 Hz ekranda her ikinci yenileme atlanır.
+//  1) Kare kapısı (quality.fpsCap): 60 iken 120 Hz ekranda her ikinci yenileme atlanır.
 //     (1000/fpsCap − 2) ms'lik pay, ekranın zamanlamasındaki küçük oynamalara karşı.
 //  2) Sabit zaman adımı: oyun mantığı her zaman 1/120 sn'lik adımlarla ilerler
 //     (60 FPS'te karede 2 adım, 120 FPS'te 1). Basma/bırakma olayları gerçekleştikleri
@@ -181,12 +185,13 @@ function startLoop() {
     }
 
     // 1) Kare kapısı
-    if (fpsCap > 0 && now - lastDraw < 1000 / fpsCap - 2) return;
+    const cap = quality.fpsCap;
+    if (cap > 0 && now - lastDraw < 1000 / cap - 2) return;
     const interval = now - lastDraw;
     lastDraw = now;
 
-    // Kalite değişiminde shader'lar derlenirken çizme: ekran son karede kalır,
-    // oyun da duraklar (takılma fizik sıçramasına dönüşmesin).
+    // "Ayarlanıyor" perdesi açıkken / shader'lar derlenirken çizme: oyun duraklar
+    // (takılma fizik sıçramasına dönüşmesin).
     if (quality.busy) {
       simTime = now;
       return;
@@ -213,18 +218,24 @@ function draw(now, interval, first, alpha = 1, t0 = performance.now()) {
   // 3) Ara değerli çizim
   const focus = game.beginRender(alpha);
   world.update(Math.min(interval / 1000, 0.1), focus);
+  gpuTimer.poll();
+  gpuTimer.begin();
   renderer.render(scene, camera);
+  gpuTimer.end();
   game.endRender();
-  cpuTime += performance.now() - t0;  // JS + çizim komutlarının gönderilmesi (GPU'nun kendi işi hariç)
+  // Karenin işi: JS + çizim komutlarının gönderilmesi; GPU süresi ölçülebiliyorsa ikisinin büyüğü
+  const cpu = performance.now() - t0;
+  const work = Math.max(cpu, gpuTimer.last || 0);
+  cpuTime += cpu;
 
   if (first) {
     mark('kv-ilk-kare');
     perf.logStartup();
     return;
   }
-  quality.update(interval / 1000);
+  if (perf.hz) quality.hz = perf.hz;
+  quality.frame(now, interval, work);
   perf.frame(now, interval);
-  if (perf.hz && quality.hz !== perf.hz) quality.hz = perf.hz;
 
   if (pendingReload && isFreshStart()) location.reload();
 
@@ -242,13 +253,15 @@ function draw(now, interval, first, alpha = 1, t0 = performance.now()) {
 
 // ?fps göstergesi
 function fpsText(cpu) {
-  const s = perf.stats(fpsCap);
+  const cap = quality.fpsCap;
+  const s = perf.stats(cap);
   const hzNote = perf.hzMeasured ? '' : (perf.hz ? ' (kayıtlı)' : ' (ölçülüyor)');
+  const gpu = gpuTimer.available ? (gpuTimer.last !== null ? `${gpuTimer.last.toFixed(1)} ms` : '…') : 'yok';
   const lines = [
-    `kare ${s.median.toFixed(1)} ms · p90 ${s.p90.toFixed(1)} · takılma ${s.stutters}/3 sn`,
-    `${browser} · ekran ${perf.hz || '?'} Hz${hzNote} · sınır ${fpsCap || 'yok'}`,
-    `işlemci ${cpu.toFixed(1)} ms · hedef aralık ${perf.targetInterval(fpsCap).toFixed(1)} ms`,
+    `hedef ${perf.targetInterval(cap).toFixed(1)} ms (${cap || 'sınırsız'} FPS) · kare p50 ${s.median.toFixed(1)} · p90 ${s.p90.toFixed(1)} ms`,
+    `takılma ${s.stutters}/3 sn · işlemci ${cpu.toFixed(1)} ms · GPU ${gpu}`,
     quality.describe(),
+    `${browser} · ekran ${perf.hz || '?'} Hz${hzNote}`,
     perf.startupLine(),
   ];
   return lines.filter(Boolean).join('\n');
@@ -284,29 +297,17 @@ function registerServiceWorker() {
 // ---------------------------------------------------------------
 //  Başlat
 // ---------------------------------------------------------------
-// Bu turda otomatik kalite ARAMASI kapalı: kademe değişimleri ölçümü bozmasın.
-// 'Otomatik' seçiliyken son kayıtlı otomatik kademede sabit kalınır.
-async function applyQualityMode(mode) {
-  if (mode === 'oto' && !diag.override) {
-    quality.mode = 'oto';
-    quality.phase = 'sabit';
-    quality.trial = null;
-    await quality.apply(quality.loadAutoLevel());
-  } else {
-    await quality.setMode(mode);
-  }
-}
-
 const settings = new Settings({ locked: !!diag.override, allowUltra: !isMobile });
 quality.hz = perf.hz || 60;  // kayıtlı ekran hızı; açılışta ölçüm beklenmez
 try {
-  await applyQualityMode(settings.mode);
+  await quality.start(settings.mode, settings.rate);
   await compileScene();
 } catch (err) {
   console.warn('Shader ön-derleme atlandı:', err);
 }
 mark('kv-shader');
-settings.onChange = (mode) => applyQualityMode(mode);
+settings.onChange = (mode) => quality.setMode(mode);
+settings.onRateChange = (rate) => quality.setRate(rate);
 
 new Input(canvas, {
   onPress: (t) => events.push({ type: 'press', t }),
