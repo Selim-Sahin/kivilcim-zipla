@@ -7,11 +7,12 @@
 import { CONFIG } from './config.js';
 
 const KEY = CONFIG.quality.storageKey;
-const OPTIONS = [
+const ALL_OPTIONS = [
   { mode: 'oto', label: 'Otomatik', hint: 'Cihaza göre ayarlanır' },
-  { mode: 'yuksek', label: 'Yüksek', hint: 'Keskin görüntü, yumuşak gölge' },
-  { mode: 'orta', label: 'Orta', hint: 'Normal çözünürlük, sert gölge' },
-  { mode: 'dusuk', label: 'Düşük', hint: 'Gölgesiz, seyrek çim' },
+  { mode: 'ultra', label: 'Ultra', hint: 'Gerçek gölgeler (yalnızca bilgisayarda)' },
+  { mode: 'yuksek', label: 'Yüksek', hint: 'Keskin görüntü' },
+  { mode: 'orta', label: 'Orta', hint: 'Normal çözünürlük' },
+  { mode: 'dusuk', label: 'Düşük', hint: 'Normal çözünürlük, seyrek çim' },
 ];
 
 const GEAR_SVG = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -20,8 +21,10 @@ const GEAR_SVG = `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="t
 
 export class Settings {
   // locked: teşhis parametreleri varken seçim devre dışı (URL ayarları geçerli)
-  constructor({ locked = false } = {}) {
+  // allowUltra: gerçek gölgeli "Ultra" seçeneği gösterilsin mi (yalnızca masaüstü)
+  constructor({ locked = false, allowUltra = false } = {}) {
     this.locked = locked;
+    this.options = ALL_OPTIONS.filter((o) => allowUltra || o.mode !== 'ultra');
     this.mode = this.load();
     this.onChange = null;
 
@@ -47,7 +50,7 @@ export class Settings {
     title.textContent = locked ? 'Kalite (teşhis modu: URL ayarları geçerli)' : 'Grafik kalitesi';
     this.menu.appendChild(title);
 
-    this.items = OPTIONS.map((o) => {
+    this.items = this.options.map((o) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'sm-item';
@@ -77,7 +80,7 @@ export class Settings {
   load() {
     try {
       const v = localStorage.getItem(KEY);
-      return OPTIONS.some((o) => o.mode === v) ? v : 'oto';
+      return this.options.some((o) => o.mode === v) ? v : 'oto';
     } catch (err) {
       return 'oto';
     }

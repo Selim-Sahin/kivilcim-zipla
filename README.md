@@ -13,10 +13,12 @@ masaüstü ve mobil tarayıcıda açılır.
 - **Saf HTML + CSS + JavaScript (ES modülleri)** — derleme adımı ya da paket yöneticisi yok.
 - **Pointer Events** — fare ve dokunmatik ekran için tek giriş sistemi.
 - **Verlet entegrasyonu** — pelerin fiziği; **InstancedMesh + özel shader** — rüzgârlı çim.
+- **Sahte gölgeler** — gerçek gölge (shadow map) yerine: robotun altında yumuşak bir leke (havadayken iniş noktasını gösterir), platformların yanında güneş yönüne uzanan, açılışta bir kez kodla çizilen yarı saydam gölge çıkartmaları. Gerçek gölge yalnızca bilgisayarda, menüdeki **Ultra** seçeneğinde açılır.
+- **Lambert malzemeler** — robot, pelerin ve platformlarda ucuz dağınık ışık modeli; robotun sabit parçaları malzemeye göre tek geometride birleştirilir (daha az çizim çağrısı).
 - **localStorage** — en yüksek skoru saklar.
 - **PWA (manifest + service worker)** — ana ekrana eklenebilir; ikinci açılış önbellekten gelir, çevrimdışı çalışır.
 - **Kare kapısı + sabit zaman adımı** — varsayılan olarak en çok 60 FPS çizilir (120 Hz ekranda her kare eşit aralıkla gelir). Oyun mantığı kare hızından bağımsız 1/120 sn'lik adımlarla ilerler; robot, kamera ve pelerin adımlar arasında ara değerlenir. Zıplama her FPS'te birebir aynıdır.
-- **Kalite kademeleri** — çözünürlük, gölge ve çim yoğunluğu; sağ üstteki dişliden seçilir (Otomatik / Yüksek / Orta / Düşük). *Şu an otomatik arama kapalı:* ölçümler bozulmasın diye "Otomatik" son kayıtlı kademede sabit kalır.
+- **Kalite kademeleri** — çözünürlük ve çim yoğunluğu; sağ üstteki dişliden seçilir (Otomatik / Ultra / Yüksek / Orta / Düşük; Ultra yalnızca bilgisayarda). Kenar yumuşatma her zaman açık; telefonda çözünürlük çarpanı 1,5 ile başlar. *Şu an otomatik arama kapalı:* ölçümler bozulmasın diye "Otomatik" son kayıtlı kademede sabit kalır.
 - **Önceden çizilmiş zemin dokusu** — zemin gürültüsü açılışta bir kez GPU'da dokuya çizilir; her karede yalnızca okunur.
 - **GitHub Pages** — statik barındırma.
 - Robot, pelerin, platformlar, çim ve dokular tamamen kodla üretilir; harici model/görsel dosyası yoktur.
@@ -51,7 +53,7 @@ python -m http.server 8000 --bind 0.0.0.0
   kare 16.7 ms · p90 17.4 · takılma 1/3 sn
   Firefox 133 · ekran 120 Hz · sınır 60
   işlemci 3.1 ms · hedef aralık 16.7 ms
-  K3 · 1x · yumuşak gölge · çim %100
+  K1 · 1.5x · sahte gölge · çim %100
   otomatik · 120 Hz · hedef 55 · sabit
   açılış ms: boya 180 · modül 420 · zemin 450 · shader 900 · kare 930
   ```
@@ -60,7 +62,7 @@ python -m http.server 8000 --bind 0.0.0.0
   - **ekran**: yenileme hızı. Oyun başladıktan sonra arka planda ölçülür ve kaydedilir; `(kayıtlı)` önceki açılışta ölçülen değerdir, `(ölçülüyor)` henüz bilinmediğini gösterir.
   - **sınır**: kare kapısı (`config.js` → `render.fpsCap`). Denemek için `?fps&cap=120` (120 Hz'e kadar) ya da `?fps&cap=0` (sınırsız).
   - **işlemci**: bir karede JavaScript'in harcadığı süre (oyun mantığı, pelerin fiziği, çizim komutları). Hedef aralığa yakınsa darboğaz işlemcidir ve grafik ayarlarını düşürmek pek işe yaramaz.
-  - **K0–K7**: kalite kademesi (`config.js` → `quality.levels`).
+  - **K0–K5**: kalite kademesi (`config.js` → `quality.levels`); **Ultra**: gerçek gölgeli kademe (`quality.ultra`).
   - **açılış ms**: sayfa açılışından itibaren: HTML'in ilk boyanması, modüllerin yüklenmesi, zemin dokusunun çizilmesi, shader derlemesinin bitmesi ve ilk oyun karesi. Aynı satır tarayıcı konsoluna da yazılır.
 
 ## Teşhis modu: hangi ayar ne kadar FPS kazandırıyor?
@@ -72,7 +74,7 @@ böylece ölçtüğün fark yalnızca o ayardan gelir.
 | Parametre | Ne yapar |
 |---|---|
 | `pr=1` | Çözünürlük çarpanı (pixelRatio). `1`, `1.5`, `2` gibi değer alır. Yüksek DPI telefonda en büyük etkili ayar genelde budur. |
-| `shadow=off` | Gölgeleri kapatır. `pcf` (sert kenarlı) ve `pcfsoft` (yumuşak, varsayılan) de yazılabilir. |
+| `shadow=pcf` | Gerçek gölgeyi açar (sahte gölgeler gizlenir); telefonda gerçek gölgenin maliyetini ölçmek için. `pcfsoft` (yumuşak kenar) ve `off` (sahte gölge, varsayılan) de yazılabilir. |
 | `grass=0` | Çimi gizler. `0.5` gibi bir oran da verilebilir. |
 | `ground=flat` | Zemini dokusuz, düz renk yapar. `ground=noise` eski yöntemi (her pikselde gürültü hesabı) geri getirir; yeni dokulu zeminle karşılaştırmak için. |
 
@@ -80,7 +82,7 @@ böylece ölçtüğün fark yalnızca o ayardan gelir.
 
 1. `…/kivilcim-zipla/?fps&pr=2` (temel ölçüm: en yüksek çözünürlük, diğer her şey açık)
 2. `…/kivilcim-zipla/?fps&pr=1`
-3. `…/kivilcim-zipla/?fps&pr=2&shadow=off`
+3. `…/kivilcim-zipla/?fps&pr=2&shadow=pcf` (gerçek gölge ne kadar pahalı?)
 4. `…/kivilcim-zipla/?fps&pr=2&grass=0`
 5. `…/kivilcim-zipla/?fps&pr=2&ground=flat` ve `…&ground=noise`
 6. `…/kivilcim-zipla/?fps&pr=1&shadow=off&grass=0&ground=flat` (her şey kapalı: ulaşılabilecek en yüksek FPS)
@@ -128,6 +130,7 @@ src/
   game.js         durum makinesi, zıplama yayı, iniş kontrolü, puan, kamera takibi
   robot.js        Kıvılcım'ın inşası, çömelme/uzama, dönme, güç halkası
   cape.js         Verlet parçacık tabanlı pelerin fiziği
+  shadows.js      sahte gölgeler: robot lekesi, platform gölge çıkartmaları
   world.js        ışıklar, sis, sonsuz zemin (açılışta dokuya çizilir), rüzgârlı çim (InstancedMesh + shader)
   platforms.js    4 bahçe objesi, zorluk eğrisi, ekrandan çıkanları silme
   input.js        Pointer Events + Boşluk tuşu
@@ -153,7 +156,9 @@ Değeri değiştirip sayfayı yenilemen yeterli. Sık kullanılanlar:
 | `render.fpsCap` | Kare kapısı: 60, 120 ya da 0 (sınırsız) |
 | `render.step`, `render.maxSteps` | Oyun mantığının sabit adımı (1/120 sn) ve bir karede en çok adım sayısı |
 | `quality.levels` | Kalite kademeleri (pixelRatio, gölge türü, çim oranı), yukarıdan aşağı denenir |
-| `quality.presets` | Dişli menüsündeki Yüksek / Orta / Düşük'ün hangi kademeye karşılık geldiği |
+| `quality.presets`, `quality.ultra` | Dişli menüsündeki seçeneklerin karşılığı olan kademeler; Ultra'nın ayarları (gerçek PCF gölge) |
+| `render.mobilePixelRatio` | Telefonda başlangıç çözünürlük çarpanı (1,5) |
+| `shadows.*` | Sahte gölgelerin rengi, saydamlığı, robot lekesinin boyu ve solması, platform gölgesinin yumuşaklığı |
 | `quality.targetRatio`, `quality.preferHighRefresh` | Hedef FPS = ekran hızı × oran; 120 Hz ekranda önce 120'nin denenip denenmeyeceği |
 | `quality.downAfter`, `quality.upAfter`, `quality.cooldown` | Kaç sn düşük/yüksek FPS'ten sonra kademe değişeceği; başarısız yükselişin bekleme süresi |
 | `world.groundTexSize`, `world.groundPeriod` | Zemin dokusunun çözünürlüğü ve tekrar genişliği |

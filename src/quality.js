@@ -4,6 +4,7 @@
 //  Modlar:
 //    'oto'    : ARAMA → İZLEME (aşağıda)
 //    'yuksek' | 'orta' | 'dusuk' : sabit kademe (CONFIG.quality.presets)
+//    'ultra'  : gerçek gölge (PCF), yalnızca masaüstü (CONFIG.quality.ultra)
 //    'teshis' : URL parametreleriyle (?pr=1&shadow=off&grass=0) sabit ayar;
 //               otomatik sistem kapalı, böylece tek tek etkiler ölçülebilir.
 //
@@ -23,14 +24,16 @@ import { CONFIG } from './config.js';
 
 const Q = CONFIG.quality;
 const SHADOW_TYPES = { pcfsoft: THREE.PCFSoftShadowMap, pcf: THREE.PCFShadowMap };
-const SHADOW_NAMES = { pcfsoft: 'yumuşak gölge', pcf: 'sert gölge', off: 'gölge yok' };
-const MODE_NAMES = { oto: 'otomatik', yuksek: 'yüksek', orta: 'orta', dusuk: 'düşük', teshis: 'teşhis' };
+const SHADOW_NAMES = { pcfsoft: 'gerçek gölge (yumuşak)', pcf: 'gerçek gölge', off: 'sahte gölge' };
+const ULTRA = 'ultra';  // kademe listesinin dışındaki özel kademe
+const MODE_NAMES = { oto: 'otomatik', ultra: 'ultra', yuksek: 'yüksek', orta: 'orta', dusuk: 'düşük', teshis: 'teşhis' };
 const COMMON_HZ = [30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240];
 
 export class Quality {
   // compile: sahnedeki tüm malzemeleri derleyen async fonksiyon (main.js sağlar)
   // override: teşhis için URL'den gelen sabit değerler ({ pixelRatio?, shadow?, grass? })
-  constructor({ renderer, scene, world, compile, override = null }) {
+  constructor({ renderer, scene, world, compile, override = null, isMobile = false }) {
+    this.isMobile = isMobile;
     this.renderer = renderer;
     this.scene = scene;
     this.world = world;
@@ -100,6 +103,7 @@ export class Quality {
   async setMode(mode) {
     if (this.override) mode = 'teshis';
     if (!(mode in MODE_NAMES)) mode = 'oto';
+    if (mode === 'ultra' && this.isMobile) mode = 'yuksek';  // gerçek gölge telefonda sunulmaz
     this.mode = mode;
     this.trial = null;
     this.resetSample();
@@ -120,19 +124,19 @@ export class Quality {
   // ---------- Kademe uygulama ----------
   // Seviyenin bu cihazdaki gerçek karşılığı (DPR 1 olan ekranda 2× istemenin anlamı yok)
   effective(i) {
-    const l = { ...Q.levels[i], ...(this.override || {}) };
+    const l = { ...(i === ULTRA ? Q.ultra : Q.levels[i]), ...(this.override || {}) };
     return { pixelRatio: Math.min(this.dpr, l.pixelRatio), shadow: l.shadow, grass: l.grass };
   }
 
   async apply(i) {
-    i = Math.max(0, Math.min(Q.levels.length - 1, i | 0));
+    if (i !== ULTRA) i = Math.max(0, Math.min(Q.levels.length - 1, i | 0));
     const next = this.effective(i);
     const prev = this.applied;
     this.index = i;
     this.applied = next;
     this.resetSample();
     this.skip = Q.skipFrames;
-    if (this.mode === 'oto') this.saveAutoLevel(i);
+    if (this.mode === 'oto' && i !== ULTRA) this.saveAutoLevel(i);
 
     if (!prev || prev.pixelRatio !== next.pixelRatio) {
       this.renderer.setPixelRatio(next.pixelRatio);
@@ -288,12 +292,20 @@ export class Quality {
   }
 
   // ---------- Kalıcılık ----------
+  // Kayıt yoksa: masaüstünde en yüksek kademe, telefonda çözünürlüğü
+  // CONFIG.render.mobilePixelRatio'yu aşmayan ilk kademe (kenar yumuşatma açık olduğu için)
+  defaultLevel() {
+    if (!this.isMobile) return 0;
+    const i = Q.levels.findIndex((l) => l.pixelRatio <= CONFIG.render.mobilePixelRatio);
+    return i >= 0 ? i : 0;
+  }
+
   loadAutoLevel() {
     try {
       const v = parseInt(localStorage.getItem(Q.autoLevelKey), 10);
-      return Number.isFinite(v) && v >= 0 && v < Q.levels.length ? v : 0;
+      return Number.isFinite(v) && v >= 0 && v < Q.levels.length ? v : this.defaultLevel();
     } catch (err) {
-      return 0;
+      return this.defaultLevel();
     }
   }
 
@@ -312,6 +324,7 @@ export class Quality {
       if (this.trial) line2 += ' (deneme)';
     }
     const ground = this.world.groundMode === 'tex' ? '' : ` · zemin ${this.world.groundMode}`;
-    return `K${this.index} · ${a.pixelRatio}x · ${SHADOW_NAMES[a.shadow]} · ${grass}${ground}\n${line2}`;
+    const name = this.index === ULTRA ? 'Ultra' : `K${this.index}`;
+    return `${name} · ${a.pixelRatio}x · ${SHADOW_NAMES[a.shadow]} · ${grass}${ground}\n${line2}`;
   }
 }

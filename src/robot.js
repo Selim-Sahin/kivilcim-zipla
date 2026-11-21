@@ -8,9 +8,15 @@
 //    body   → çömelme/uzama ölçeği (pivot ayak hizasında)  ← parçalar burada
 //    ring   → güç halkası (yaw altında, ölçekten etkilenmez)
 //  Robotun "önü" yerel +Z yönüdür.
+//
+//  Çizim maliyeti: her grubun içindeki sabit parçalar, malzemesi aynıysa
+//  tek geometride birleştirilir (mergeStatic). Hareketli parçalar (kollar,
+//  baş, anten) kendi gruplarında kalır. Malzemeler Lambert: ışık hesabı
+//  fiziksel (Standard) malzemeden çok daha ucuz.
 // =============================================================
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CONFIG } from './config.js';
 
 const R = CONFIG.robot;
@@ -45,6 +51,37 @@ export class Spring {
     this.v = 0;
     this.target = value;
   }
+}
+
+// Bir grubun doğrudan çocuğu olan meshleri malzemeye göre birleştirir:
+// aynı malzemeli parçalar tek geometri (tek çizim çağrısı) olur. Parçaların
+// konum/dönüş/ölçeği geometriye işlenir; alt gruplara (hareketli parçalar) dokunulmaz.
+function mergeStatic(group) {
+  const byMat = new Map();
+  for (const o of group.children) {
+    if (!o.isMesh) continue;
+    if (!byMat.has(o.material)) byMat.set(o.material, []);
+    byMat.get(o.material).push(o);
+  }
+  for (const [mat, meshes] of byMat) {
+    if (meshes.length < 2) continue;
+    const geos = meshes.map((m) => {
+      m.updateMatrix();
+      const g = m.geometry.clone().applyMatrix4(m.matrix);  // paylaşılan geometri bozulmasın: kopya
+      return g.index ? g.toNonIndexed() : g;
+    });
+    const merged = new THREE.Mesh(mergeGeometries(geos), mat);
+    merged.castShadow = meshes.some((m) => m.castShadow);
+    for (const g of geos) g.dispose();
+    for (const m of meshes) group.remove(m);
+    group.add(merged);
+  }
+}
+
+// Fiziksel malzemenin (metalness) koyulaştırdığı rengi Lambert'te taklit et
+function lambert(color, metalness, extra = {}) {
+  const c = new THREE.Color(color).multiplyScalar(1 - metalness);
+  return new THREE.MeshLambertMaterial({ color: c, ...extra });
 }
 
 // Yardımcı: mesh oluşturup ebeveyne ekler. "x = 0" varsayılan parametredir.
@@ -98,16 +135,16 @@ export class Robot {
     scene.add(this.root);
 
     this.mats = {
-      body: new THREE.MeshStandardMaterial({ color: C.graphite, roughness: 0.8, metalness: 0.1 }),
-      glove: new THREE.MeshStandardMaterial({ color: C.glove, roughness: 0.9, metalness: 0.05 }),
-      copper: new THREE.MeshStandardMaterial({ color: C.copper, roughness: 0.42, metalness: 0.3 }),
-      visor: new THREE.MeshStandardMaterial({
-        color: C.visor, emissive: C.visorGlow, emissiveIntensity: 0.9, roughness: 0.25, metalness: 0.2,
-      }),
-      eye: new THREE.MeshStandardMaterial({ color: C.eye, emissive: C.eye, emissiveIntensity: 1.6 }),
+      body: lambert(C.graphite, 0.1),
+      glove: lambert(C.glove, 0.05),
+      copper: lambert(C.copper, 0.3),
+      // Parlayan parçalar: kendi ışığını yayar (emissive), aydınlatmadan bağımsız
+      visor: lambert(C.visor, 0.2, { emissive: C.visorGlow, emissiveIntensity: 0.9 }),
+      eye: lambert(C.eye, 0, { emissive: C.eye, emissiveIntensity: 1.6 }),
     };
 
     this.build();
+    for (const g of [this.body, this.head, this.antennaGroup, ...this.armPivots]) mergeStatic(g);
     this.ring = this.createRing();
     this.yawGroup.add(this.ring);
 

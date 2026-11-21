@@ -182,6 +182,11 @@ export class World {
     scene.background = new THREE.Color(C.sky);
     scene.fog = new THREE.Fog(C.sky, W.fogNear, W.fogFar);
 
+    // Sahte gölgeler (robot lekesi, platform gölgeleri) bu grupta toplanır;
+    // gerçek gölge açılınca (Ultra) hepsi birden gizlenir.
+    this.decals = new THREE.Group();
+    scene.add(this.decals);
+
     this.createLights(isMobile);
     this.createGround();
     this.createGrass(isMobile);
@@ -191,10 +196,11 @@ export class World {
     this.hemi = new THREE.HemisphereLight(C.hemiSky, C.hemiGround, L.hemiIntensity);
     this.scene.add(this.hemi);
 
-    // Sıcak gün ışığı: tek yönlü ışık + yumuşak gölge
+    // Sıcak gün ışığı: tek yönlü ışık. Gerçek gölge varsayılan olarak kapalı
+    // (yalnızca Ultra'da açılır); ayarları o zaman için hazır tutulur.
     const sun = new THREE.DirectionalLight(C.sun, L.sunIntensity);
     const size = isMobile ? L.shadowMapSizeMobile : L.shadowMapSize;
-    sun.castShadow = true;
+    sun.castShadow = false;
     sun.shadow.mapSize.set(size, size);
     const cam = sun.shadow.camera;
     cam.left = -L.shadowExtent;
@@ -367,9 +373,10 @@ export class World {
     this.grass.count = Math.max(1, Math.round(this.grassMax * ratio));
   }
 
-  // Kalite ayarı: güneş gölge yapsın mı
+  // Kalite ayarı: gerçek gölge mi (Ultra), sahte gölge mi
   setShadows(on) {
     this.sun.castShadow = on;
+    this.decals.visible = !on;
   }
 
   // Ekran boyutu değişince çim alanını görünür bölgeye göre ayarla

@@ -12,6 +12,7 @@ import { CONFIG } from './config.js';
 import { Robot } from './robot.js';
 import { Cape } from './cape.js';
 import { Platforms } from './platforms.js';
+import { RobotBlob } from './shadows.js';
 
 const J = CONFIG.jump;
 const LND = CONFIG.landing;
@@ -55,7 +56,8 @@ export class Game {
 
     this.robot = new Robot(scene);
     this.cape = new Cape(scene, this.robot);
-    this.platforms = new Platforms(scene, renderer);
+    this.platforms = new Platforms(scene, renderer, world.decals);
+    this.blob = new RobotBlob(world.decals);
     this.effect = this.createCenterEffect();
 
     this.focus = new THREE.Vector3();
@@ -464,10 +466,22 @@ export class Game {
     r.yawGroup.rotation.y = p.yaw + (c.yaw - p.yaw) * alpha;
     r.body.scale.lerpVectors(p.scale, c.scale, alpha);
     r.root.updateMatrixWorld(true);
+    this.updateBlob();
     _f.lerpVectors(p.focus, c.focus, alpha);
     this.placeCamera(_f);
     this.cape.writeGeometry(alpha);
     return _f;
+  }
+
+  // Robotun sahte gölgesi: tam altındaki yüzeye (platform üstü ya da zemin) oturur
+  updateBlob() {
+    const pos = this.robot.root.position;
+    let surface = 0;
+    for (const p of [this.cur, this.next]) {
+      const y = p.surfaceY();
+      if (y > surface && y <= pos.y + 0.05 && p.contains(pos.x, pos.z, 0)) surface = y;
+    }
+    this.blob.update(pos.x, pos.y, pos.z, surface);
   }
 
   // Çizimden sonra: oyun mantığının gerçek durumunu geri yükle

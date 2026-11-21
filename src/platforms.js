@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CONFIG } from './config.js';
 import { Spring } from './robot.js';
+import { createPlatformShadow, disposePlatformShadow, groundDecalPosition } from './shadows.js';
 
 const P = CONFIG.platforms;
 const D = CONFIG.difficulty;
@@ -130,12 +131,14 @@ function createMaterials(aniso) {
   barkTex.wrapS = THREE.RepeatWrapping;
   barkTex.repeat.set(3, 1);
   return {
-    bark: new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1, flatShading: true }),
-    stumpTop: new THREE.MeshStandardMaterial({ map: canvasTexture(256, 256, drawRings, aniso), roughness: 0.9 }),
-    stone: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, flatShading: true }),
-    crate: new THREE.MeshStandardMaterial({ map: canvasTexture(256, 256, drawPlanks, aniso), roughness: 0.85 }),
-    crateFrame: new THREE.MeshStandardMaterial({ color: C.crateFrame, roughness: 0.9 }),
-    bricks: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }),
+    // Lambert: yalnızca dağınık ışık (pürüzlü ahşap/taş için fiziksel malzemeyle neredeyse aynı,
+    // piksel başına çok daha ucuz; robotla aynı shader programlarını paylaşır)
+    bark: new THREE.MeshLambertMaterial({ map: barkTex, flatShading: true }),
+    stumpTop: new THREE.MeshLambertMaterial({ map: canvasTexture(256, 256, drawRings, aniso) }),
+    stone: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+    crate: new THREE.MeshLambertMaterial({ map: canvasTexture(256, 256, drawPlanks, aniso) }),
+    crateFrame: new THREE.MeshLambertMaterial({ color: C.crateFrame }),
+    bricks: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
   };
 }
 
@@ -187,7 +190,7 @@ function buildStump(r, M) {
   for (const g of parts) g.dispose();
   barkAll.dispose();
   top.dispose();
-  return { geo, mat: [M.bark, M.stumpTop], shape: 'circle', half: r, top: h };
+  return { geo, mat: [M.bark, M.stumpTop], shape: 'circle', half: r, top: h, foot: 1.12 };
 }
 
 function buildStone(r, M) {
@@ -344,7 +347,7 @@ const BUILDERS = { stump: buildStump, stone: buildStone, crate: buildCrate, bric
 //  Tek platform
 // ---------------------------------------------------------------
 class Platform {
-  constructor(type, built, drop) {
+  constructor(type, built, drop, decals) {
     this.type = type;
     this.shape = built.shape;
     this.half = built.half;
@@ -364,12 +367,20 @@ class Platform {
 
     this.press = new Spring(0, P.springFreq, P.springDamping);  // 0 = normal, + = basılı
     this.dropT = drop ? 0 : 1;
+
+    // Sahte gölge: yerde, güneş yönüne uzanan yumuşak leke (bir kez çizilir)
+    this.shadow = createPlatformShadow(this.shape, this.half, this.top, built.foot || 1);
+    this.shadowOpacity = this.shadow.material.opacity;
+    decals.add(this.shadow);
   }
 
   setPosition(x, z) {
     this.x = x;
     this.z = z;
     this.group.position.set(x, this.dropT < 1 ? P.dropHeight : 0, z);
+    const c = this.shadow.userData.center;
+    groundDecalPosition(this.shadow.position, x + c.x, z + c.y);
+    this.shadow.material.opacity = this.shadowOpacity * this.dropT;
   }
 
   // (x, z) noktası üst yüzeyin izinde mi? margin: kenardan taşma payı
@@ -396,6 +407,7 @@ class Platform {
       const t = this.dropT;
       this.group.position.y = P.dropHeight * (1 - t * t);  // hızlanarak düşer
       if (this.dropT >= 1) this.press.v += 2.5;              // yere çarpınca hafif ezilme
+      this.shadow.material.opacity = this.shadowOpacity * t * t;  // düşerken gölge koyulaşır
     }
     const p = this.press.update(dt);
     this.group.scale.y = 1 - p;
@@ -407,6 +419,7 @@ class Platform {
   dispose() {
     if (this.group.parent) this.group.parent.remove(this.group);
     this.mesh.geometry.dispose();  // malzemeler paylaşımlı, silinmez
+    disposePlatformShadow(this.shadow);
   }
 }
 
@@ -414,8 +427,10 @@ class Platform {
 //  Platform yöneticisi: üretim, zorluk eğrisi, temizlik
 // ---------------------------------------------------------------
 export class Platforms {
-  constructor(scene, renderer) {
+  // decals: sahte gölgelerin ekleneceği grup (World.decals)
+  constructor(scene, renderer, decals) {
     this.scene = scene;
+    this.decals = decals;
     this.materials = createMaterials(Math.min(8, renderer.capabilities.getMaxAnisotropy()));
     this.list = [];
     this.lastType = null;
@@ -459,7 +474,7 @@ export class Platforms {
   }
 
   create(type, r, drop) {
-    const p = new Platform(type, BUILDERS[type](r, this.materials), drop);
+    const p = new Platform(type, BUILDERS[type](r, this.materials), drop, this.decals);
     this.scene.add(p.group);
     this.list.push(p);
     return p;

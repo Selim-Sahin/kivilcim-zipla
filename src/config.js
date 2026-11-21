@@ -9,7 +9,7 @@
 export const CONFIG = {
   // ---------- Görüntü ve performans ----------
   render: {
-    antialiasMaxDpr: 1.5,   // DPR bundan büyükse kenar yumuşatma kapalı (ekran zaten keskin)
+    mobilePixelRatio: 1.5,  // telefonda başlangıç çözünürlük çarpanı (kenar yumuşatma her zaman açık)
     exposure: 1.0,          // genel parlaklık (ton eşleme pozlaması)
     // Kare kapısı: en çok bu kadar FPS çiz (60 | 120 | 0 = sınırsız). 120 Hz ekranda 60
     // seçilirse her ikinci yenileme atlanır; kareler eşit aralıkla (16,7 ms) gelir.
@@ -43,21 +43,21 @@ export const CONFIG = {
     cooldown: 30,           // başarısız kademeye yeniden çıkmadan beklenen süre (sn), her başarısızlıkta 2 katı
     cooldownMax: 300,
     storageKey: 'kivilcim.kalite',      // manuel seçim (Otomatik/Yüksek/Orta/Düşük)
-    autoLevelKey: 'kivilcim.otoKademe', // otomatik modun son kademesi (sonraki açılış oradan başlar)
+    autoLevelKey: 'kivilcim.otoKademe2', // otomatik modun son kademesi (kademeler değişti → yeni anahtar)
     hzKey: 'kivilcim.ekranHz',          // arka planda ölçülen ekran yenileme hızı
-    presets: { yuksek: 0, orta: 4, dusuk: 7 },  // manuel seçimlerin karşılığı olan kademeler
-    // shadow: 'pcfsoft' (yumuşak) | 'pcf' (sert kenarlı, daha ucuz) | 'off'
+    presets: { ultra: 'ultra', yuksek: 0, orta: 3, dusuk: 5 },  // menü seçimlerinin karşılığı olan kademeler
+    // shadow: 'off' = sahte gölgeler (shadows.js) | 'pcf' = gerçek gölge | 'pcfsoft' (yalnızca teşhis)
     // grass: çim tutamı oranı (1 = world.grassCount'un tamamı)
     levels: [
-      { pixelRatio: 2,    shadow: 'pcfsoft', grass: 1 },
-      { pixelRatio: 1.5,  shadow: 'pcfsoft', grass: 1 },
-      { pixelRatio: 1.25, shadow: 'pcfsoft', grass: 1 },
-      { pixelRatio: 1,    shadow: 'pcfsoft', grass: 1 },
-      { pixelRatio: 1,    shadow: 'pcf',     grass: 1 },
-      { pixelRatio: 1,    shadow: 'off',     grass: 1 },
-      { pixelRatio: 1,    shadow: 'off',     grass: 0.6 },
-      { pixelRatio: 1,    shadow: 'off',     grass: 0.35 },
+      { pixelRatio: 2,    shadow: 'off', grass: 1 },
+      { pixelRatio: 1.5,  shadow: 'off', grass: 1 },
+      { pixelRatio: 1.25, shadow: 'off', grass: 1 },
+      { pixelRatio: 1,    shadow: 'off', grass: 1 },
+      { pixelRatio: 1,    shadow: 'off', grass: 0.6 },
+      { pixelRatio: 1,    shadow: 'off', grass: 0.35 },
     ],
+    // Menüdeki "Ultra": gerçek gölge (PCF). Yalnızca masaüstünde sunulur.
+    ultra: { pixelRatio: 2, shadow: 'pcf', grass: 1 },
   },
 
   // ---------- Kamera ----------
@@ -152,6 +152,22 @@ export const CONFIG = {
     flutterFreq: 16,      // dalgalanma frekansı
     breeze: 1.5,          // dururken esinti etkisi
     substep: 1 / 120,     // fizik adımı (sn)
+  },
+
+  // ---------- Sahte gölgeler (shadows.js) ----------
+  shadows: {
+    color: '#1e2610',        // koyu zeytin: çimin gölgedeki tonuna yakın
+    lift: 0.006,             // platform üstünde: yüzeyin bu kadar üstünde (+ polygonOffset)
+    grassLift: 0.28,         // zeminde: çim yapraklarının üstünde (yoksa yapraklar gölgeyi örter)
+    blobSize: 0.7,           // robot lekesinin çapı (yerdeyken)
+    blobOpacity: 0.62,
+    blobFadeHeight: 3,       // bu yükseklikte leke en küçük ve en soluk
+    blobMinScale: 0.55,
+    blobMinOpacity: 0.3,
+    blobSunOffset: 0.3,      // leke güneş yönüne bu yükseklik kadar kayar
+    platformOpacity: 0.55,
+    platformBlur: 0.09,      // platform gölgesinin kenar yumuşaklığı (dünya birimi)
+    platformTexSize: 128,    // platform gölge dokusunun çözünürlüğü
   },
 
   // ---------- Dünya ----------

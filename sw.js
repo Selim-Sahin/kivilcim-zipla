@@ -7,7 +7,7 @@
 //  sürümü arka planda indirir, eski önbelleği siler; sayfa da uygun
 //  anda (oyuncu henüz puan almamışken) kendini yeniler.
 // =============================================================
-const VERSION = 'v-4b8fb8a301';
+const VERSION = 'v-44c7a96104';
 const CACHE = 'kivilcim-' + VERSION;
 
 // Oyunun ihtiyaç duyduğu dosyaların tamamı (ilk açılışta hepsi indirilir)
@@ -35,6 +35,7 @@ const ASSETS = [
   './src/quality.js',
   './src/settings.js',
   './src/perf.js',
+  './src/shadows.js',
 ];
 
 self.addEventListener('install', (event) => {

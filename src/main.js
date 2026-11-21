@@ -16,7 +16,6 @@ mark('kv-moduller');  // buraya gelindiyse tüm modüller indi ve çalıştı
 const params = new URLSearchParams(location.search);
 const canvas = document.getElementById('game');
 const loader = document.getElementById('loader');
-const dpr = window.devicePixelRatio || 1;
 // Dokunmatik birincil girdi → telefon/tablet kabul et (daha hafif ayarlar)
 const isMobile = window.matchMedia('(pointer: coarse)').matches;
 
@@ -47,7 +46,7 @@ let renderer;
 try {
   renderer = new THREE.WebGLRenderer({
     canvas,
-    antialias: dpr <= CONFIG.render.antialiasMaxDpr,
+    antialias: true,
     powerPreference: 'high-performance',
   });
 } catch (err) {
@@ -55,8 +54,10 @@ try {
   document.getElementById('error').hidden = false;
   throw err;
 }
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Gerçek gölge varsayılan olarak kapalı (sahte gölgeler: shadows.js). Yalnızca
+// masaüstünde menüden "Ultra" seçilirse PCF gölge açılır (quality.js).
+renderer.shadowMap.enabled = false;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.toneMapping = THREE.NeutralToneMapping;
 renderer.toneMappingExposure = CONFIG.render.exposure;
 
@@ -69,7 +70,7 @@ world.bakeGround(renderer);  // zemin gürültüsü bir kez dokuya çizilir
 mark('kv-zemin');
 const hud = new Hud();
 const game = new Game({ scene, camera, renderer, world, hud });
-const quality = new Quality({ renderer, scene, world, compile: compileScene, override: diag.override });
+const quality = new Quality({ renderer, scene, world, compile: compileScene, override: diag.override, isMobile });
 
 // Adres sonuna ?debug eklenirse oyun nesneleri tarayıcı konsolundan erişilebilir
 if (params.has('debug')) {
@@ -296,7 +297,7 @@ async function applyQualityMode(mode) {
   }
 }
 
-const settings = new Settings({ locked: !!diag.override });
+const settings = new Settings({ locked: !!diag.override, allowUltra: !isMobile });
 quality.hz = perf.hz || 60;  // kayıtlı ekran hızı; açılışta ölçüm beklenmez
 try {
   await applyQualityMode(settings.mode);

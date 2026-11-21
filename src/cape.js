@@ -123,9 +123,7 @@ export class Cape {
     }
     geo.setIndex(idx);
 
-    const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true, roughness: 0.95, metalness: 0, side: THREE.DoubleSide,
-    });
+    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.castShadow = true;
     this.mesh.frustumCulled = false;  // köşeler her karede değişiyor
