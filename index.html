@@ -43,6 +43,7 @@
   <link rel="modulepreload" href="./src/hud.js">
   <link rel="modulepreload" href="./src/quality.js">
   <link rel="modulepreload" href="./src/settings.js">
+  <link rel="modulepreload" href="./src/perf.js">
 </head>
 <body>
   <canvas id="game" aria-label="Oyun alanı"></canvas>
@@ -79,6 +80,12 @@
     Bu tarayıcıda WebGL çalışmıyor. Güncel bir tarayıcıyla tekrar dene.
   </div>
 
+  <!-- Açılış ölçümü: HTML'in ilk boyandığı an (tarayıcı Paint Timing vermiyorsa bu kullanılır) -->
+  <script>
+    requestAnimationFrame(function () {
+      setTimeout(function () { try { performance.mark('kv-ilk-boyama'); } catch (e) {} }, 0);
+    });
+  </script>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

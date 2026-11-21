@@ -33,6 +33,18 @@ const State = Object.freeze({
 
 const LYING_ANGLE = 1.45;   // yere düşünce yatma açısı (radyan)
 const _v = new THREE.Vector3();
+const _f = new THREE.Vector3();
+
+// Çizimde ara değerlenen durum: robotun dönüşümleri ve kamera odağı
+function makeSnapshot() {
+  return {
+    pos: new THREE.Vector3(),
+    quat: new THREE.Quaternion(),
+    yaw: 0,
+    scale: new THREE.Vector3(1, 1, 1),
+    focus: new THREE.Vector3(),
+  };
+}
 
 export class Game {
   constructor({ scene, camera, renderer, world, hud }) {
@@ -55,11 +67,17 @@ export class Game {
     this.ignoreRelease = false; // yeniden başlatan dokunuşun bırakılması zıplatmasın
     this.tip = null;            // devrilme bilgisi
     this.flight = null;         // uçuş bilgisi
+    this.clock = 0;             // oyun saati (ms, performance.now() ölçeğinde; main.js her adımda verir)
+    this.chargeStart = 0;       // şarjın başladığı an (ms)
+    this.prevSnap = makeSnapshot();  // son adımdan önceki durum
+    this.curSnap = makeSnapshot();   // son adımdaki durum
+    this.teleport = false;           // yeniden başlatmada ara değer yapma
 
     this.checkConfig();
     this.restart();
     this.focus.copy(this.focusTarget);
     this.updateCamera(0);
+    this.saveSnapshot(this.prevSnap);
   }
 
   // Ayar hatası uyarısı: en geniş aralık maksimum zıplamayla aşılabilmeli
@@ -94,6 +112,7 @@ export class Game {
     this.hud.hideGameOver();
     this.setState(State.READY);
     this.updateFocusTarget();
+    this.teleport = true;
   }
 
   setState(s) {
@@ -102,7 +121,9 @@ export class Game {
   }
 
   // ---------------- Girdi ----------------
-  press() {
+  // t: olayın gerçekleştiği an (ms). Şarj süresi kare/adım sayısından değil, basma ve
+  // bırakma anları arasındaki farktan hesaplanır: aynı basış her FPS'te aynı zıplamadır.
+  press(t = this.clock) {
     this.held = true;
     if (this.state === State.OVER) {
       if (this.stateTime >= UI.restartLock) {
@@ -111,16 +132,19 @@ export class Game {
       }
       return;
     }
-    if (this.state === State.READY) this.beginCharge();
+    if (this.state === State.READY) this.beginCharge(t);
   }
 
-  release() {
+  release(t = this.clock) {
     this.held = false;
     if (this.ignoreRelease) {
       this.ignoreRelease = false;
       return;
     }
-    if (this.state === State.CHARGING) this.jump();
+    if (this.state === State.CHARGING) {
+      this.charge = Math.max(0, (t - this.chargeStart) / 1000);
+      this.jump();
+    }
   }
 
   cancel() {
@@ -133,7 +157,8 @@ export class Game {
     }
   }
 
-  beginCharge() {
+  beginCharge(t = this.clock) {
+    this.chargeStart = t;
     this.charge = 0;
     this.charge01 = 0;
     this.setState(State.CHARGING);
@@ -397,9 +422,63 @@ export class Game {
     // Kare hızından bağımsız yumuşak takip
     const k = 1 - Math.exp(-CAM.followSpeed * dt);
     this.focus.lerp(this.focusTarget, k);
-    this.camera.position.copy(this.focus).add(this.camOffset);
-    this.camera.lookAt(this.focus);
+    this.placeCamera(this.focus);
+  }
+
+  placeCamera(focus) {
+    this.camera.position.copy(focus).add(this.camOffset);
+    this.camera.lookAt(focus);
     this.camera.updateMatrixWorld();
+  }
+
+  // ---------------- Sabit adım ve ara değer ----------------
+  // main.js oyunu her zaman aynı uzunlukta (h = 1/120 sn) adımlarla ilerletir.
+  // Böylece zıplama yayı, şarj ve fizik 60 ya da 120 FPS'te birebir aynıdır.
+  step(h) {
+    this.saveSnapshot(this.prevSnap);
+    this.update(h);
+    if (this.teleport) {          // yeni oyun: eski konumdan kayarak gelmesin
+      this.saveSnapshot(this.prevSnap);
+      this.teleport = false;
+    }
+  }
+
+  saveSnapshot(s) {
+    const r = this.robot;
+    s.pos.copy(r.root.position);
+    s.quat.copy(r.tilt.quaternion);
+    s.yaw = r.yawGroup.rotation.y;
+    s.scale.copy(r.body.scale);
+    s.focus.copy(this.focus);
+  }
+
+  // Çizimden hemen önce: robotu, kamerayı ve pelerini son iki adımın arasına koy.
+  // alpha = 0 → önceki adım, 1 → son adım. Döndürdüğü odak dünyaya (çim, güneş) verilir.
+  beginRender(alpha) {
+    const p = this.prevSnap;
+    const c = this.curSnap;
+    const r = this.robot;
+    this.saveSnapshot(c);
+    r.root.position.lerpVectors(p.pos, c.pos, alpha);
+    r.tilt.quaternion.slerpQuaternions(p.quat, c.quat, alpha);
+    r.yawGroup.rotation.y = p.yaw + (c.yaw - p.yaw) * alpha;
+    r.body.scale.lerpVectors(p.scale, c.scale, alpha);
+    r.root.updateMatrixWorld(true);
+    _f.lerpVectors(p.focus, c.focus, alpha);
+    this.placeCamera(_f);
+    this.cape.writeGeometry(alpha);
+    return _f;
+  }
+
+  // Çizimden sonra: oyun mantığının gerçek durumunu geri yükle
+  endRender() {
+    const c = this.curSnap;
+    const r = this.robot;
+    r.root.position.copy(c.pos);
+    r.tilt.quaternion.copy(c.quat);
+    r.yawGroup.rotation.y = c.yaw;
+    r.body.scale.copy(c.scale);
+    r.root.updateMatrixWorld(true);
   }
 
   // ---------------- Ana güncelleme ----------------

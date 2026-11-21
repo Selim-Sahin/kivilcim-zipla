@@ -1,6 +1,6 @@
 // =============================================================
 //  main.js — Giriş noktası: renderer, sahne, kamera, boyutlandırma,
-//  shader ön-derleme, uyarlanabilir kalite ve ana döngü.
+//  shader ön-derleme, kalite, ana döngü (kare kapısı + sabit zaman adımı).
 // =============================================================
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
@@ -10,7 +10,9 @@ import { Input } from './input.js';
 import { Hud } from './hud.js';
 import { Quality } from './quality.js';
 import { Settings } from './settings.js';
+import { Perf, mark, browserName } from './perf.js';
 
+mark('kv-moduller');  // buraya gelindiyse tüm modüller indi ve çalıştı
 const params = new URLSearchParams(location.search);
 const canvas = document.getElementById('game');
 const loader = document.getElementById('loader');
@@ -36,6 +38,11 @@ function readDiagnostics() {
 }
 const diag = readDiagnostics();
 
+// Kare kapısı: config'teki değer, denemek için ?cap=60 | ?cap=120 | ?cap=0 (sınırsız)
+const capParam = parseInt(params.get('cap'), 10);
+const fpsCap = capParam >= 0 ? capParam : CONFIG.render.fpsCap;
+const perf = new Perf();
+
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({
@@ -59,6 +66,7 @@ const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 100);
 
 const world = new World(scene, isMobile, { ground: diag.ground });
 world.bakeGround(renderer);  // zemin gürültüsü bir kez dokuya çizilir
+mark('kv-zemin');
 const hud = new Hud();
 const game = new Game({ scene, camera, renderer, world, hud });
 const quality = new Quality({ renderer, scene, world, compile: compileScene, override: diag.override });
@@ -129,45 +137,120 @@ async function compileScene() {
 
 // ---------------------------------------------------------------
 //  Ana döngü
+//
+//  1) Kare kapısı: fpsCap = 60 iken 120 Hz ekranda her ikinci yenileme atlanır.
+//     (1000/fpsCap − 2) ms'lik pay, ekranın zamanlamasındaki küçük oynamalara karşı.
+//  2) Sabit zaman adımı: oyun mantığı her zaman 1/120 sn'lik adımlarla ilerler
+//     (60 FPS'te karede 2 adım, 120 FPS'te 1). Basma/bırakma olayları gerçekleştikleri
+//     zamana göre doğru adıma yerleştirilir; böylece şarj süresi ve zıplama her
+//     kare hızında birebir aynıdır.
+//  3) Çizim: robot, kamera ve pelerin son iki adımın arasına ara değerlenir.
 // ---------------------------------------------------------------
+const STEP = CONFIG.render.step;
+const STEP_MS = STEP * 1000;
+const events = [];  // { type: 'press' | 'release' | 'cancel', t: ms }
+
+// t zamanından önce gerçekleşmiş girdileri oyuna ilet
+function applyEvents(t) {
+  while (events.length && events[0].t < t) {
+    const e = events.shift();
+    if (e.type === 'press') game.press(e.t);
+    else if (e.type === 'release') game.release(e.t);
+    else game.cancel();
+  }
+}
+
 const fpsEl = params.has('fps') ? createFpsMeter() : null;
-let fpsFrames = 0;
-let fpsTime = 0;
+const browser = browserName();
+let statTime = 0;
+let statFrames = 0;
 let cpuTime = 0;
 let pendingReload = false;  // yeni sürüm hazır, uygun anda sayfayı yenile
 
 function startLoop() {
-  let last = performance.now();
+  let simTime = null;   // oyunun ulaştığı an (ms, performance.now() ölçeğinde)
+  let lastDraw = null;  // son çizimin anı
   renderer.setAnimationLoop((now) => {
-    // dt: geçen süre (sn). Sekme arka plandan dönünce büyük sıçrama olmasın diye sınırlı.
-    const raw = Math.max(0, (now - last) / 1000);
-    last = now;
+    perf.raf(now);      // ekran Hz ölçümü (atlanan kareler de sayılır)
+    if (simTime === null) {
+      simTime = now;
+      lastDraw = now;
+      draw(now, 0, true);
+      return;
+    }
+
+    // 1) Kare kapısı
+    if (fpsCap > 0 && now - lastDraw < 1000 / fpsCap - 2) return;
+    const interval = now - lastDraw;
+    lastDraw = now;
+
     // Kalite değişiminde shader'lar derlenirken çizme: ekran son karede kalır,
     // oyun da duraklar (takılma fizik sıçramasına dönüşmesin).
-    if (quality.busy) return;
-    const dt = Math.min(raw, CONFIG.render.maxFrameTime);
-
-    const t0 = performance.now();
-    game.update(dt);
-    world.update(dt, game.focus);
-    renderer.render(scene, camera);
-    cpuTime += performance.now() - t0;  // JS + çizim komutlarının gönderilmesi (GPU'nun kendi işi hariç)
-    quality.update(raw);
-
-    if (pendingReload && isFreshStart()) location.reload();
-
-    if (fpsEl) {
-      fpsFrames++;
-      fpsTime += raw;
-      if (fpsTime >= 0.5) {
-        const cpu = (cpuTime / fpsFrames).toFixed(1);
-        fpsEl.textContent = `${Math.round(fpsFrames / fpsTime)} FPS · işlemci ${cpu} ms\n` + quality.describe();
-        fpsFrames = 0;
-        cpuTime = 0;
-        fpsTime = 0;
-      }
+    if (quality.busy) {
+      simTime = now;
+      return;
     }
+
+    // 2) Sabit adımlar
+    const t0 = performance.now();
+    let steps = 0;
+    while (simTime + STEP_MS <= now && steps < CONFIG.render.maxSteps) {
+      applyEvents(simTime + STEP_MS);
+      game.clock = simTime + STEP_MS;
+      game.step(STEP);
+      simTime += STEP_MS;
+      steps++;
+    }
+    // Uzun takılma (ör. sekme arka plandaydı): yetişilemeyen süre atılır, oyun sıçramaz
+    if (now - simTime > STEP_MS) simTime = now;
+
+    draw(now, interval, false, (now - simTime) / STEP_MS, t0);
   });
+}
+
+function draw(now, interval, first, alpha = 1, t0 = performance.now()) {
+  // 3) Ara değerli çizim
+  const focus = game.beginRender(alpha);
+  world.update(Math.min(interval / 1000, 0.1), focus);
+  renderer.render(scene, camera);
+  game.endRender();
+  cpuTime += performance.now() - t0;  // JS + çizim komutlarının gönderilmesi (GPU'nun kendi işi hariç)
+
+  if (first) {
+    mark('kv-ilk-kare');
+    perf.logStartup();
+    return;
+  }
+  quality.update(interval / 1000);
+  perf.frame(now, interval);
+  if (perf.hz && quality.hz !== perf.hz) quality.hz = perf.hz;
+
+  if (pendingReload && isFreshStart()) location.reload();
+
+  if (fpsEl) {
+    statFrames++;
+    statTime += interval;
+    if (statTime >= 500) {
+      fpsEl.textContent = fpsText(cpuTime / statFrames);
+      statFrames = 0;
+      statTime = 0;
+      cpuTime = 0;
+    }
+  }
+}
+
+// ?fps göstergesi
+function fpsText(cpu) {
+  const s = perf.stats(fpsCap);
+  const hzNote = perf.hzMeasured ? '' : (perf.hz ? ' (kayıtlı)' : ' (ölçülüyor)');
+  const lines = [
+    `kare ${s.median.toFixed(1)} ms · p90 ${s.p90.toFixed(1)} · takılma ${s.stutters}/3 sn`,
+    `${browser} · ekran ${perf.hz || '?'} Hz${hzNote} · sınır ${fpsCap || 'yok'}`,
+    `işlemci ${cpu.toFixed(1)} ms · hedef aralık ${perf.targetInterval(fpsCap).toFixed(1)} ms`,
+    quality.describe(),
+    perf.startupLine(),
+  ];
+  return lines.filter(Boolean).join('\n');
 }
 
 // Oyuncu henüz hiç puan almamışsa yenilemek hiçbir şey kaybettirmez
@@ -200,20 +283,34 @@ function registerServiceWorker() {
 // ---------------------------------------------------------------
 //  Başlat
 // ---------------------------------------------------------------
+// Bu turda otomatik kalite ARAMASI kapalı: kademe değişimleri ölçümü bozmasın.
+// 'Otomatik' seçiliyken son kayıtlı otomatik kademede sabit kalınır.
+async function applyQualityMode(mode) {
+  if (mode === 'oto' && !diag.override) {
+    quality.mode = 'oto';
+    quality.phase = 'sabit';
+    quality.trial = null;
+    await quality.apply(quality.loadAutoLevel());
+  } else {
+    await quality.setMode(mode);
+  }
+}
+
 const settings = new Settings({ locked: !!diag.override });
+quality.hz = perf.hz || 60;  // kayıtlı ekran hızı; açılışta ölçüm beklenmez
 try {
-  // Kayıtlı kalite modunu uygula (ekran hızını da ölçer), ardından tüm shader'ları derle
-  await quality.start(settings.mode);
+  await applyQualityMode(settings.mode);
   await compileScene();
 } catch (err) {
   console.warn('Shader ön-derleme atlandı:', err);
 }
-settings.onChange = (mode) => quality.setMode(mode);
+mark('kv-shader');
+settings.onChange = (mode) => applyQualityMode(mode);
 
 new Input(canvas, {
-  onPress: () => game.press(),
-  onRelease: () => game.release(),
-  onCancel: () => game.cancel(),
+  onPress: (t) => events.push({ type: 'press', t }),
+  onRelease: (t) => events.push({ type: 'release', t }),
+  onCancel: (t) => events.push({ type: 'cancel', t }),
 });
 
 startLoop();

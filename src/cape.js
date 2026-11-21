@@ -35,6 +35,7 @@ export class Cape {
     this.rest = new Float32Array(n * 3);       // gövdeye göre dinlenme konumları
     this.anchorPrev = new Float32Array(this.cols * 3);
     this.anchorCur = new Float32Array(this.cols * 3);
+    this.renderPrev = new Float32Array(n * 3);  // son adımdan önceki konumlar (ara değer için)
     this.inv = new THREE.Matrix4();
     this.hPrev = K.substep;
 
@@ -145,12 +146,14 @@ export class Cape {
     this.anchorCur.set(this.pos.subarray(0, this.cols * 3));
     this.anchorPrev.set(this.anchorCur);
     this.hPrev = K.substep;
-    this.writeGeometry();
+    this.renderPrev.set(this.pos);
+    this.writeGeometry(1);
   }
 
   // floorY: pelerinin altına inemeyeceği yükseklik; wind: rüzgâr yönü (Vector3)
   update(dt, time, floorY, wind) {
     if (dt <= 0) return;
+    this.renderPrev.set(this.pos);
     const m = this.robot.body.matrixWorld;   // çağırmadan önce güncellenmiş olmalı
     this.inv.copy(m).invert();
 
@@ -174,7 +177,7 @@ export class Cape {
     for (let s = 0; s < steps; s++) {
       this.step(h, (s + 1) / steps, time + s * h, flutter, floorY, wind, m);
     }
-    this.writeGeometry();
+    // Geometri burada değil, çizimden hemen önce writeGeometry(alpha) ile yazılır
   }
 
   step(h, alpha, time, flutter, floorY, wind, m) {
@@ -305,9 +308,13 @@ export class Cape {
     }
   }
 
-  writeGeometry() {
+  // alpha: son iki fizik adımı arasındaki konum (0 = önceki adım, 1 = son adım)
+  writeGeometry(alpha) {
     const geo = this.mesh.geometry;
-    geo.attributes.position.array.set(this.pos);
+    const out = geo.attributes.position.array;
+    const a = this.renderPrev;
+    const b = this.pos;
+    for (let i = 0; i < b.length; i++) out[i] = a[i] + (b[i] - a[i]) * alpha;
     geo.attributes.position.needsUpdate = true;
     geo.computeVertexNormals();
   }

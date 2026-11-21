@@ -15,7 +15,8 @@ masaüstü ve mobil tarayıcıda açılır.
 - **Verlet entegrasyonu** — pelerin fiziği; **InstancedMesh + özel shader** — rüzgârlı çim.
 - **localStorage** — en yüksek skoru saklar.
 - **PWA (manifest + service worker)** — ana ekrana eklenebilir; ikinci açılış önbellekten gelir, çevrimdışı çalışır.
-- **Uyarlanabilir kalite** — ekranın yenileme hızı (60/120 Hz) ölçülür, FPS oyun boyunca izlenir; çözünürlük, gölge ve çim yoğunluğu gerektiğinde kademeli düşürülür ya da yükseltilir. Sağ üstteki dişliden elle de seçilebilir (Otomatik / Yüksek / Orta / Düşük).
+- **Kare kapısı + sabit zaman adımı** — varsayılan olarak en çok 60 FPS çizilir (120 Hz ekranda her kare eşit aralıkla gelir). Oyun mantığı kare hızından bağımsız 1/120 sn'lik adımlarla ilerler; robot, kamera ve pelerin adımlar arasında ara değerlenir. Zıplama her FPS'te birebir aynıdır.
+- **Kalite kademeleri** — çözünürlük, gölge ve çim yoğunluğu; sağ üstteki dişliden seçilir (Otomatik / Yüksek / Orta / Düşük). *Şu an otomatik arama kapalı:* ölçümler bozulmasın diye "Otomatik" son kayıtlı kademede sabit kalır.
 - **Önceden çizilmiş zemin dokusu** — zemin gürültüsü açılışta bir kez GPU'da dokuya çizilir; her karede yalnızca okunur.
 - **GitHub Pages** — statik barındırma.
 - Robot, pelerin, platformlar, çim ve dokular tamamen kodla üretilir; harici model/görsel dosyası yoktur.
@@ -45,15 +46,22 @@ python -m http.server 8000 --bind 0.0.0.0
 - Bu bilgisayarda: <http://localhost:8000>
 - Aynı ağdaki telefon/tablette: `http://<bilgisayarın-yerel-IP'si>:8000`
   (Windows'ta IP için `ipconfig`; güvenlik duvarı Python için izin isteyebilir — "Özel ağ"ı onayla.)
-- Kare hızını ve kalite kademesini görmek için adresin sonuna `?fps` ekle: `http://localhost:8000/?fps`. Gösterge üç satırdır:
+- Kare zamanlamasını görmek için adresin sonuna `?fps` ekle: `http://localhost:8000/?fps`. Örnek gösterge:
   ```
-  58 FPS · işlemci 3.1 ms
-  K1 · 1.5x · yumuşak gölge · çim %100
-  otomatik · 120 Hz · hedef 55 · izleme
+  kare 16.7 ms · p90 17.4 · takılma 1/3 sn
+  Firefox 133 · ekran 120 Hz · sınır 60
+  işlemci 3.1 ms · hedef aralık 16.7 ms
+  K3 · 1x · yumuşak gölge · çim %100
+  otomatik · 120 Hz · hedef 55 · sabit
+  açılış ms: boya 180 · modül 420 · zemin 450 · shader 900 · kare 930
   ```
-  - **işlemci**: bir karede JavaScript'in harcadığı süre (oyun mantığı, pelerin fiziği, çizim komutları). 120 Hz için kare başına 8,3 ms, 60 Hz için 16,7 ms bütçe var. Bu sayı bütçeye yakınsa darboğaz işlemcidir ve grafik ayarlarını düşürmek pek işe yaramaz.
+  - **kare / p90**: son 3 sn'de çizilen karelerin aralığının **ortancası** ve **90. yüzdeliği** (ms). Ortalama FPS düzensizliği gizler: 60 FPS sınırında akıcı bir oyunda ikisi de ~16,7 olmalıdır. p90 ortancadan çok büyükse kareler düzensiz geliyordur.
+  - **takılma**: son 3 sn'de hedef aralığın 1,5 katından uzun süren kare sayısı.
+  - **ekran**: yenileme hızı. Oyun başladıktan sonra arka planda ölçülür ve kaydedilir; `(kayıtlı)` önceki açılışta ölçülen değerdir, `(ölçülüyor)` henüz bilinmediğini gösterir.
+  - **sınır**: kare kapısı (`config.js` → `render.fpsCap`). Denemek için `?fps&cap=120` (120 Hz'e kadar) ya da `?fps&cap=0` (sınırsız).
+  - **işlemci**: bir karede JavaScript'in harcadığı süre (oyun mantığı, pelerin fiziği, çizim komutları). Hedef aralığa yakınsa darboğaz işlemcidir ve grafik ayarlarını düşürmek pek işe yaramaz.
   - **K0–K7**: kalite kademesi (`config.js` → `quality.levels`).
-  - **arama / izleme / derleniyor / (deneme)**: otomatik kalitenin o anki işi.
+  - **açılış ms**: sayfa açılışından itibaren: HTML'in ilk boyanması, modüllerin yüklenmesi, zemin dokusunun çizilmesi, shader derlemesinin bitmesi ve ilk oyun karesi. Aynı satır tarayıcı konsoluna da yazılır.
 
 ## Teşhis modu: hangi ayar ne kadar FPS kazandırıyor?
 
@@ -68,7 +76,7 @@ böylece ölçtüğün fark yalnızca o ayardan gelir.
 | `grass=0` | Çimi gizler. `0.5` gibi bir oran da verilebilir. |
 | `ground=flat` | Zemini dokusuz, düz renk yapar. `ground=noise` eski yöntemi (her pikselde gürültü hesabı) geri getirir; yeni dokulu zeminle karşılaştırmak için. |
 
-Önerilen ölçüm sırası (her birinde FPS'in oturması için ~10 sn bekle):
+Önerilen ölçüm sırası (her birinde değerlerin oturması için ~10 sn bekle; `kare` ve `p90`'a bak):
 
 1. `…/kivilcim-zipla/?fps&pr=2` (temel ölçüm: en yüksek çözünürlük, diğer her şey açık)
 2. `…/kivilcim-zipla/?fps&pr=1`
@@ -77,7 +85,7 @@ böylece ölçtüğün fark yalnızca o ayardan gelir.
 5. `…/kivilcim-zipla/?fps&pr=2&ground=flat` ve `…&ground=noise`
 6. `…/kivilcim-zipla/?fps&pr=1&shadow=off&grass=0&ground=flat` (her şey kapalı: ulaşılabilecek en yüksek FPS)
 
-Her şey kapalıyken bile FPS düşükse ve **işlemci** süresi yüksekse sorun grafik değil, JavaScript tarafıdır.
+Her şey kapalıyken bile kare süresi yüksekse ve **işlemci** süresi de yüksekse sorun grafik değil, JavaScript tarafıdır.
 - `?debug` eklenirse tarayıcı konsolundan `game` nesnesine erişebilirsin (ör. `game.score`, `game.state`).
 
 ## GitHub Pages'te yayınlama
@@ -116,7 +124,7 @@ tools/
   sw_surum.py     sw.js VERSION'unu dosya içeriklerinden günceller (yayından önce)
 src/
   config.js       TÜM ayarlanabilir değerler (zıplama, yerçekimi, pelerin, zorluk, renkler…)
-  main.js         renderer, sahne, kamera, shader ön-derleme, ana döngü, service worker kaydı
+  main.js         renderer, sahne, kamera, shader ön-derleme, ana döngü (kare kapısı, sabit adım), service worker kaydı
   game.js         durum makinesi, zıplama yayı, iniş kontrolü, puan, kamera takibi
   robot.js        Kıvılcım'ın inşası, çömelme/uzama, dönme, güç halkası
   cape.js         Verlet parçacık tabanlı pelerin fiziği
@@ -124,7 +132,8 @@ src/
   platforms.js    4 bahçe objesi, zorluk eğrisi, ekrandan çıkanları silme
   input.js        Pointer Events + Boşluk tuşu
   hud.js          puan, en iyi skor, puan balonları, oyun bitti ekranı
-  quality.js      uyarlanabilir kalite: ekran hızı ölçümü, arama, histerezisli izleme, teşhis modu
+  quality.js      kalite kademeleri: arama, histerezisli izleme (şimdilik kapalı), teşhis modu
+  perf.js         ?fps göstergesi: kare süresi istatistikleri, açılış ölçümü, ekran Hz
   settings.js     sağ üstteki dişli: Otomatik / Yüksek / Orta / Düşük (localStorage)
 ```
 
@@ -141,6 +150,8 @@ Değeri değiştirip sayfayı yenilemen yeterli. Sık kullanılanlar:
 | `difficulty.*` | Platform boyutu ve aralığının puana göre değişimi |
 | `cape.iterations`, `cape.stiffness`, `cape.bendStiffness` | Pelerinin sertliği |
 | `cape.airDrag`, `cape.flutter` | Havada savrulma ve dalgalanma |
+| `render.fpsCap` | Kare kapısı: 60, 120 ya da 0 (sınırsız) |
+| `render.step`, `render.maxSteps` | Oyun mantığının sabit adımı (1/120 sn) ve bir karede en çok adım sayısı |
 | `quality.levels` | Kalite kademeleri (pixelRatio, gölge türü, çim oranı), yukarıdan aşağı denenir |
 | `quality.presets` | Dişli menüsündeki Yüksek / Orta / Düşük'ün hangi kademeye karşılık geldiği |
 | `quality.targetRatio`, `quality.preferHighRefresh` | Hedef FPS = ekran hızı × oran; 120 Hz ekranda önce 120'nin denenip denenmeyeceği |

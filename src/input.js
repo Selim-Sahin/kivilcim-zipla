@@ -3,8 +3,17 @@
 //    onPress   → basıldı
 //    onRelease → bırakıldı
 //    onCancel  → basış yarıda kaldı (sekme değişti, pencere odağı gitti…)
+//  Her olaya gerçekleştiği an (ms, performance.now() ölçeğinde) verilir; oyun
+//  basılı tutma süresini kare hızından bağımsız, bu zamanlarla hesaplar.
 //  Aynı anda yalnızca tek bir basış kaynağı (bir parmak / fare / Boşluk) izlenir.
 // =============================================================
+
+// Olayın zaman damgası; tarayıcı tuhaf bir değer verirse şimdiki an
+function stamp(e) {
+  const now = performance.now();
+  const t = e && e.timeStamp;
+  return t > 0 && Math.abs(t - now) < 5000 ? t : now;
+}
 
 export class Input {
   constructor(element, handlers) {
@@ -44,7 +53,7 @@ export class Input {
     this.pointerId = e.pointerId;
     // Parmak tuvalin dışına kaysa bile "bırakma" olayı bize gelsin
     try { this.el.setPointerCapture(e.pointerId); } catch (err) { /* önemsiz */ }
-    this.h.onPress();
+    this.h.onPress(stamp(e));
   }
 
   onPointerUp(e) {
@@ -52,7 +61,7 @@ export class Input {
     e.preventDefault();
     this.source = null;
     this.pointerId = null;
-    this.h.onRelease();
+    this.h.onRelease(stamp(e));
   }
 
   onKeyDown(e) {
@@ -60,7 +69,7 @@ export class Input {
     e.preventDefault();                                      // sayfa kaymasın
     if (e.repeat || this.source !== null) return;            // basılı tutunca tekrar gelen olayları yok say
     this.source = 'key';
-    this.h.onPress();
+    this.h.onPress(stamp(e));
   }
 
   onKeyUp(e) {
@@ -68,13 +77,13 @@ export class Input {
     e.preventDefault();
     if (this.source !== 'key') return;
     this.source = null;
-    this.h.onRelease();
+    this.h.onRelease(stamp(e));
   }
 
   cancel() {
     if (this.source === null) return;
     this.source = null;
     this.pointerId = null;
-    this.h.onCancel();
+    this.h.onCancel(performance.now());
   }
 }

@@ -11,7 +11,14 @@ export const CONFIG = {
   render: {
     antialiasMaxDpr: 1.5,   // DPR bundan büyükse kenar yumuşatma kapalı (ekran zaten keskin)
     exposure: 1.0,          // genel parlaklık (ton eşleme pozlaması)
-    maxFrameTime: 1 / 30,   // bir karede ilerletilecek en uzun süre (takılmada sıçramayı önler)
+    // Kare kapısı: en çok bu kadar FPS çiz (60 | 120 | 0 = sınırsız). 120 Hz ekranda 60
+    // seçilirse her ikinci yenileme atlanır; kareler eşit aralıkla (16,7 ms) gelir.
+    // Adres çubuğundan denemek için: ?cap=120
+    fpsCap: 60,
+    // Oyun mantığı sabit adımlarla ilerler (kare hızından bağımsız, zıplama her FPS'te aynı).
+    // Çizimde robot, kamera ve pelerin iki adım arasında ara değerlenir.
+    step: 1 / 120,
+    maxSteps: 8,            // bir karede en çok bu kadar adım (uzun takılmada kalan süre atılır)
   },
 
   // ---------- Uyarlanabilir kalite ----------
@@ -37,6 +44,7 @@ export const CONFIG = {
     cooldownMax: 300,
     storageKey: 'kivilcim.kalite',      // manuel seçim (Otomatik/Yüksek/Orta/Düşük)
     autoLevelKey: 'kivilcim.otoKademe', // otomatik modun son kademesi (sonraki açılış oradan başlar)
+    hzKey: 'kivilcim.ekranHz',          // arka planda ölçülen ekran yenileme hızı
     presets: { yuksek: 0, orta: 4, dusuk: 7 },  // manuel seçimlerin karşılığı olan kademeler
     // shadow: 'pcfsoft' (yumuşak) | 'pcf' (sert kenarlı, daha ucuz) | 'off'
     // grass: çim tutamı oranı (1 = world.grassCount'un tamamı)
